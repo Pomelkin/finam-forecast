@@ -1,0 +1,17 @@
+[project]
+name = "finam-forecast"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.11.8",
+    "torch>=2.8.0",
+    "transformers>=4.56.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipywidgets>=8.1.7",
+    "jupyter>=1.1.1",
+]
