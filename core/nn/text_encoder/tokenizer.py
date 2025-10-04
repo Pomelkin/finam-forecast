@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Literal
 
 import torch
@@ -61,7 +60,7 @@ class NewsTokenizerWrapper:
 
         if return_tensors == "pt":
             return {
-                "input_ids": torch.tensor([input_ids], dtype=torch.long),
+                "input_ids": torch.tensor(input_ids, dtype=torch.long).unsqueeze(0),
                 "attention_mask": torch.ones((1, len(input_ids)), dtype=torch.long),
             }
         else:

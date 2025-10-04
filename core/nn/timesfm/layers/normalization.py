@@ -30,6 +30,10 @@ class RMSNorm(nn.Module):
         self.scale = nn.Parameter(torch.zeros(num_features))
         self.num_features = num_features
         self.epsilon = epsilon
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        torch.nn.init.ones_(self.scale)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         var = torch.mean(torch.square(inputs), dim=-1, keepdim=True)

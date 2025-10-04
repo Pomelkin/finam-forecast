@@ -48,6 +48,17 @@ def make_attn_mask(
     )
 
 
+def ce_attention_mask(
+    query_length: int,
+    num_heads: int,
+    kv_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Makes attention mask for cross-encoder."""
+    # B, T -> B, H, Q, T
+    mask = kv_mask[:, None, None, :].expand(-1, num_heads, query_length, -1).bool()
+    return mask
+
+
 class RotaryPositionalEmbedding(nn.Module):
     """Rotary positional embedding."""
 
@@ -124,7 +135,9 @@ def _dot_product_attention(
     return torch.einsum("...hqk,...khd->...qhd", attn_weights, value)
 
 
-def _torch_dot_product_attention(query, key, value, mask=None):
+def _torch_dot_product_attention(
+    query, key, value, mask=None, scale: float | None = 1.0
+) -> torch.Tensor:
     """
     Performs the exact same (unscaled) attention as the above function,
     but using the fast and fused F.scaled_dot_product_attention kernel.
@@ -139,7 +152,7 @@ def _torch_dot_product_attention(query, key, value, mask=None):
     #    - Pass the mask to `attn_mask`.
     #    - Set `scale=1.0` to disable the default 1/sqrt(d_k) scaling.
     output = F.scaled_dot_product_attention(
-        query, key, value, attn_mask=mask, scale=1.0
+        query, key, value, attn_mask=mask, scale=scale
     )
 
     # 3. Permute the output back to the original (B, L, H, D) layout
@@ -247,12 +260,10 @@ class MultiHeadAttention(nn.Module):
             )
 
         num_masked = torch.sum(patch_mask.to(torch.int32), dim=-1)
-        next_index = torch.zeros_like(num_masked, dtype=torch.int32)
 
         if self.use_rotary_position_embeddings:
             position = (
                 torch.arange(n_patches, device=inputs_q.device)[None, :]
-                + next_index[:, None]
                 - num_masked[:, None]
             )
             query = self.rotary_position_embedding(query, position)
@@ -278,6 +289,107 @@ class MultiHeadAttention(nn.Module):
         return out
 
 
+class MultiHeadCrossAttention(nn.Module):  # new block
+    """Multi-head attention."""
+
+    def __init__(
+        self,
+        num_heads: int,
+        in_features: int,
+        use_rotary_position_embeddings: bool = True,
+        use_bias: bool = False,
+        attention_fn: Callable[..., torch.Tensor] = _torch_dot_product_attention,
+        qk_norm: str = "rms",
+    ) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        self.in_features = in_features
+        self.head_dim = in_features // num_heads
+        self.use_bias = use_bias
+        self.attention_fn = attention_fn
+        self.qk_norm = qk_norm
+
+        if self.in_features % self.num_heads != 0:
+            raise ValueError(
+                f"Memory dimension ({self.in_features}) must be divisible by "
+                f"'num_heads' heads ({self.num_heads})."
+            )
+
+        self.kv_proj = nn.Linear(
+            self.in_features, 2 * self.in_features, bias=use_bias
+        )
+        self.q_proj = nn.Linear(self.in_features, self.in_features, bias=use_bias)
+        self.out = nn.Linear(self.in_features, self.in_features, bias=use_bias)
+
+        self.query_ln = RMSNorm(self.head_dim)
+        self.key_ln = RMSNorm(self.head_dim)
+
+        self.use_rotary_position_embeddings = use_rotary_position_embeddings
+        if self.use_rotary_position_embeddings:
+            self.rotary_position_embedding = RotaryPositionalEmbedding(
+                embedding_dims=self.head_dim,
+            )
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        torch.nn.init.normal_(self.q_proj.weight, std=0.02)
+        if self.q_proj.bias is not None:
+            torch.nn.init.zeros_(self.q_proj.bias)
+        torch.nn.init.normal_(self.kv_proj.weight, std=0.02)
+        if self.kv_proj.bias is not None:
+            torch.nn.init.zeros_(self.kv_proj.bias)
+        return
+
+    def forward(
+        self,
+        inputs_ts: torch.Tensor,
+        patch_mask: torch.Tensor,
+        inputs_text: torch.Tensor,
+        text_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        b_ts, n_patches_ts, _ = inputs_ts.shape
+        b_text, n_tokens_text, _ = inputs_text.shape
+
+        query = self.q_proj(inputs_ts).view(
+            b_ts, n_patches_ts, self.num_heads, self.head_dim
+        )
+        key, value = (
+            self.kv_proj(inputs_text)
+            .view(b_text, n_tokens_text, 2, self.num_heads, self.head_dim)
+            .unbind(2)
+        )
+
+        num_masked = torch.sum(patch_mask.to(torch.int32), dim=-1)
+
+        if self.use_rotary_position_embeddings:
+            position_ts = (
+                torch.arange(n_patches_ts, device=inputs_ts.device)[None, :]
+                - num_masked[:, None]
+            )
+            positions_text = text_mask.cumsum(dim=1) - 1
+            query = self.rotary_position_embedding(query, position_ts)
+            key = self.rotary_position_embedding(key, positions_text)
+            
+        query = self.query_ln(query)
+        key = self.key_ln(key)
+
+        attn_mask = ce_attention_mask(
+            query_length=n_patches_ts, num_heads=self.num_heads, kv_mask=text_mask
+        )
+
+        x = self.attention_fn(
+            query,
+            key,
+            value,
+            mask=attn_mask,
+            scale=1.0 / math.sqrt(self.head_dim),
+        )
+
+        x = x.reshape(b_ts, n_patches_ts, self.in_features)
+        out = self.out(x)
+        return out
+
+
 class Transformer(nn.Module):
     """Classic Transformer used in TimesFM."""
 
@@ -288,6 +400,16 @@ class Transformer(nn.Module):
         if config.attention_norm == "rms":
             self.pre_attn_ln = RMSNorm(num_features=config.model_dims)
             self.post_attn_ln = RMSNorm(num_features=config.model_dims)
+
+            self.pre_crossattn_ln_ts = RMSNorm(
+                num_features=config.model_dims
+            )  # new_block
+            self.pre_crossattn_ln_text = RMSNorm(
+                num_features=config.model_dims
+            )  # new_block
+            self.post_crossattn_ln = RMSNorm(
+                num_features=config.model_dims
+            )  # new_block
         else:
             raise ValueError(f"Layer norm: {config.attention_norm} not supported.")
 
@@ -298,6 +420,12 @@ class Transformer(nn.Module):
             use_rotary_position_embeddings=config.use_rotary_position_embeddings,
             qk_norm=config.qk_norm,
             fuse_qkv=config.fuse_qkv,
+        )
+        self.cross_attn = MultiHeadCrossAttention(  # new_block
+            num_heads=config.num_heads,
+            in_features=config.model_dims,
+            use_rotary_position_embeddings=config.use_rotary_position_embeddings,
+            qk_norm=config.qk_norm,
         )
 
         if config.feedforward_norm == "rms":
@@ -324,17 +452,31 @@ class Transformer(nn.Module):
             self.activation = nn.Identity()
         else:
             raise ValueError(f"Activation: {config.ff_activation} not supported.")
-
+    
     def forward(
         self,
-        input_embeddings: torch.Tensor,
-        patch_mask: torch.Tensor,
+        input_embeddings_ts: torch.Tensor,
+        patch_mask_ts: torch.Tensor,
+        input_embedding_text: torch.Tensor,
+        token_mask_text: torch.Tensor,
     ) -> torch.Tensor:
         attn_output = self.attn(
-            inputs_q=self.pre_attn_ln(input_embeddings),
-            patch_mask=patch_mask,
+            inputs_q=self.pre_attn_ln(input_embeddings_ts),
+            patch_mask=patch_mask_ts,
         )
-        attn_output = self.post_attn_ln(attn_output) + input_embeddings
+        attn_output = self.post_attn_ln(attn_output) + input_embeddings_ts
+
+        attn_output_skip = attn_output
+
+        attn_output = self.cross_attn(
+            inputs_ts=self.pre_crossattn_ln_ts(attn_output),
+            patch_mask=patch_mask_ts,
+            inputs_text=self.pre_crossattn_ln_text(input_embedding_text),
+            text_mask=token_mask_text,
+        )
+
+        attn_output = self.post_crossattn_ln(attn_output) + attn_output_skip
+
         output_embeddings = (
             self.post_ff_ln(
                 self.ff1(self.activation(self.ff0(self.pre_ff_ln(attn_output))))

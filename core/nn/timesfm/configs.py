@@ -112,6 +112,9 @@ class TimesFM_2p5_200M_Config:
     input_patch_len: int = 32
     output_patch_len: int = 128
     decode_index: int = 5
+    quantiles: list[float] = dataclasses.field(
+        default_factory=lambda: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    )
     tokenizer: ResidualBlockConfig = ResidualBlockConfig(
         input_dims=64,
         hidden_dims=1280,

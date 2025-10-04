@@ -25,11 +25,13 @@ from torch.nn.modules.module import _IncompatibleKeys
 from .configs import TimesFM_2p5_200M_Config
 from core.nn.text_encoder import ModernBertConfig, ModernBertModel
 
-from .layers import compute_causal_statistics
+
 from .layers import ResidualBlock
-from .layers import revin
 from .layers import Transformer
 from core.utils import setup_logger
+from .utils import compute_causal_statistics
+from .utils import revin
+from .utils import update_running_stats
 
 
 logger = setup_logger(__file__)
@@ -66,6 +68,8 @@ class TimesFM_2p5_Model(nn.Module):
         self.num_heads = config.stacked_transformers.transformer.num_heads  # 16
         self.model_dims = config.stacked_transformers.transformer.model_dims  # 1280
         self.num_heads = self.model_dims // self.num_heads  # 80
+        self.num_quantiles = len(config.quantiles) + 1  # 10
+        self.pred_quantile_index = config.decode_index  # 5
 
         # Layers.
         self.tokenizer = ResidualBlock(config.tokenizer)
@@ -76,6 +80,10 @@ class TimesFM_2p5_Model(nn.Module):
             ]
         )
         self.output_projection_point = ResidualBlock(config.output_projection_point)
+
+        self.config = config
+
+        self._init_projections()
         return
 
     def _init_projections(self) -> None:
@@ -91,52 +99,103 @@ class TimesFM_2p5_Model(nn.Module):
         config = {"text_encoder": self.text_encoder_config.to_dict()}
         return config
 
-    def forward(self, inputs: torch.Tensor, masks: torch.Tensor):
-        tokenizer_inputs = torch.cat([inputs, masks.to(inputs.dtype)], dim=-1)
+    def forward(
+        self,
+        inputs_ts: torch.Tensor,
+        masks_ts: torch.Tensor,
+        inputs_text: torch.Tensor,
+        mask_text: torch.Tensor,
+    ) -> torch.Tensor:
+        B = inputs_ts.shape[0]
+        tokenizer_inputs = torch.cat([inputs_ts, masks_ts.to(inputs_ts.dtype)], dim=-1)
         input_embeddings = self.tokenizer(tokenizer_inputs)
 
         output_embeddings = input_embeddings
         for layer in self.stacked_xf:
-            output_embeddings = layer(output_embeddings, masks[..., -1])
+            output_embeddings = layer(
+                input_embeddings_ts=output_embeddings,
+                patch_mask_ts=masks_ts[..., -1],
+                input_embedding_text=inputs_text,
+                token_mask_text=mask_text,
+            )
         output_ts = self.output_projection_point(output_embeddings)
+        output_ts = output_ts.reshape(B, -1, self.output_patch_len, self.num_quantiles)
         return output_ts
 
-    def forecast(self, inputs: torch.Tensor, mask: torch.Tensor):
-        batch_size, context_len = inputs.shape[0], inputs.shape[1]
+    def forecast(
+        self,
+        inputs_ts: torch.Tensor,
+        mask_ts: torch.Tensor,
+        inputs_text: torch.Tensor,
+        mask_text: torch.Tensor,
+    ) -> torch.Tensor:
+        text_embeddings = self.text_encoder(
+            input_ids=inputs_text, attention_mask=mask_text
+        ).last_hidden_state
+        text_embeddings = self.text_projection(text_embeddings)
 
+        batch_size, context_len = inputs_ts.shape[0], inputs_ts.shape[1]
         if (pad_len := -(context_len) % self.input_patch_len) != 0:
-            inputs = torch.cat(
+            inputs_ts = torch.cat(
                 [
                     torch.zeros(
                         batch_size,
                         pad_len,
-                        device=inputs.device,
+                        device=inputs_ts.device,
                     ),
-                    inputs,
+                    inputs_ts,
                 ],
                 dim=1,
             )
-            mask = torch.cat(
+            mask_ts = torch.cat(
                 [
                     torch.ones(
                         batch_size,
                         pad_len,
-                        device=mask.device,
+                        device=mask_ts.device,
                         dtype=torch.bool,
                     ),
-                    mask,
+                    mask_ts,
                 ],
                 dim=1,
             )
             context_len += pad_len
 
-        causal_means, causal_scale = compute_causal_statistics(inputs, mask)
-        normalized_inputs = revin(inputs, causal_means, causal_scale, reverse=False)
-        normalized_output_ts = self(normalized_inputs, mask)
-        output_ts = revin(
-            normalized_output_ts, causal_means, causal_scale, reverse=True
+        if context_len > self.config.context_limit:
+            inputs_ts = inputs_ts[:, -self.config.context_limit :]
+            mask_ts = mask_ts[:, -self.config.context_limit :]
+
+        inputs_ts = torch.reshape(inputs_ts, (batch_size, -1, self.input_patch_len))
+        mask_ts = torch.reshape(mask_ts, (batch_size, -1, self.input_patch_len))
+
+        num_input_patches = inputs_ts.shape[1]
+        n = torch.zeros(batch_size, device=inputs_ts.device)
+        mu = torch.zeros(batch_size, device=inputs_ts.device)
+        sigma = torch.zeros(batch_size, device=inputs_ts.device)
+        context_mu = torch.zeros(
+            (batch_size, num_input_patches),
+            device=inputs_ts.device,
         )
-        output_ts = torch.reshape(output_ts, (batch_size, -1, self.output_patch_len))
+        context_sigma = torch.zeros(
+            (batch_size, num_input_patches),
+            device=inputs_ts.device,
+        )
+
+        for i in range(num_input_patches):
+            n, mu, sigma = update_running_stats(
+                n, mu, sigma, inputs_ts[:, i], mask_ts[:, i]
+            )
+            context_mu[:, i] = mu
+            context_sigma[:, i] = sigma
+        causal_means, causal_scale = compute_causal_statistics(inputs_ts, mask_ts)
+        normalized_inputs = revin(inputs_ts, causal_means, causal_scale, reverse=False)
+        normalized_output_ts = self(normalized_inputs, mask_ts, text_embeddings, mask_text)
+        normalized_output_ts = normalized_output_ts[..., self.pred_quantile_index]
+        last_causal_mean = causal_means[..., -1].unsqueeze(-1)
+        last_causal_scale = causal_scale[..., -1].unsqueeze(-1)
+        output_ts = revin(
+            normalized_output_ts, last_causal_mean, last_causal_scale, reverse=True
+        )
         return output_ts
 
     @classmethod

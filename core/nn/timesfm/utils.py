@@ -24,11 +24,10 @@ def update_running_stats(
     sigma: torch.Tensor,
     x: torch.Tensor,
     mask: torch.Tensor,
-) -> tuple[
-    tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Updates the running stats."""
+    if mask.dtype != torch.bool:
+        mask = mask.bool()
     is_legit = torch.logical_not(mask)
     inc_n = torch.sum(is_legit.to(x.dtype), dim=-1)
 
@@ -57,7 +56,7 @@ def update_running_stats(
     new_var = torch.where(new_n == 0, 0.0, new_var)
     new_sigma = torch.sqrt(torch.clamp(new_var, min=0.0))
 
-    return (w := (new_n, new_mu, new_sigma), w)
+    return new_n, new_mu, new_sigma
 
 
 def revin(
@@ -86,6 +85,9 @@ def compute_causal_statistics(
     minimum_scale: float = 0.1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     # Compute causal means at each time step
+    B, T, C = data.shape
+    data = data.reshape(B, -1)
+    weights = weights.reshape(B, -1)
     if weights.dtype != torch.bool:
         weights = weights.bool()
     weights = ~weights
@@ -111,4 +113,6 @@ def compute_causal_statistics(
     causal_variance = m_2 / torch.clamp(denominator - 1.0, min=1.0)
     causal_scale = torch.sqrt(causal_variance + minimum_scale)
 
+    causal_means = causal_means.reshape(B, T, C)
+    causal_scale = causal_scale.reshape(B, T, C)
     return causal_means, causal_scale
