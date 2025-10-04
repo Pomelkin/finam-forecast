@@ -5,13 +5,25 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "logbook>=1.8.2",
+    "orjson>=3.11.3",
     "pydantic>=2.11.8",
+    "requests>=2.32.5",
     "torch>=2.8.0",
     "transformers>=4.56.1",
 ]
 
 [dependency-groups]
 dev = [
+    "clearml[s3]>=2.0.2",
     "ipywidgets>=8.1.7",
     "jupyter>=1.1.1",
+    "pandas>=2.3.3",
+    "pre-commit>=4.3.0",
+    "pyarrow>=21.0.0",
+    "pypdf2>=3.0.1",
 ]
+
+[tool.pyright]
+typeCheckingMode = "basic" # "off" | "basic" | "standard" | "strict"
+reportMissingTypeStubs = false
