@@ -41,7 +41,6 @@ from transformers.modeling_rope_utils import dynamic_rope_update
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
-from transformers.utils.auto_docstring import auto_docstring
 from transformers.utils.import_utils import is_flash_attn_2_available
 from transformers.utils.import_utils import is_triton_available
 
@@ -208,12 +207,11 @@ class ModernBertEmbeddings(nn.Module):
             config.hidden_size, eps=config.norm_eps, bias=config.norm_bias
         )
         self.drop = nn.Dropout(config.embedding_dropout)
-        self.no_news_token = nn.Parameter(torch.zeros(1, config.hidden_size))
+        self.no_news_token = nn.Parameter(torch.randn(1, config.hidden_size))
         self.no_news_token_id = config.no_news_token_id
 
-    @torch.compile(dynamic=True)
-    def compiled_embeddings(self, input_ids: torch.LongTensor) -> torch.Tensor:
-        return self.drop(self.norm(self.tok_embeddings(input_ids)))
+        torch.nn.init.normal_(self.tok_embeddings.weight, mean=0.0, std=config.initializer_range)
+        return
 
     def forward(
         self,
@@ -221,18 +219,18 @@ class ModernBertEmbeddings(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if inputs_embeds is not None:
-            hidden_states = self.drop(self.norm(inputs_embeds))
-        else:
-            hidden_states = (
-                self.compiled_embeddings(input_ids)
-                if self.config.reference_compile
-                else self.drop(self.norm(self.tok_embeddings(input_ids)))
-            )
-        hidden_states = torch.where(
-            input_ids.unsqueeze(-1) == self.no_news_token_id,
-            self.no_news_token.unsqueeze(0),
-            hidden_states,
-        )
+            raise ValueError("inputs_embeds is not supported.")
+        if input_ids is None:
+            raise ValueError("input_ids must be provided.")
+        
+        base = self.tok_embeddings(input_ids)
+
+        mask = (input_ids == self.no_news_token_id).unsqueeze(-1)
+        if mask.any():
+            no_news_full = self.no_news_token.expand(base.size(0), base.size(1), -1)
+            base = torch.where(mask, no_news_full, base)
+
+        hidden_states = self.drop(self.norm(base))
         return hidden_states
 
 
@@ -613,7 +611,6 @@ class ModernBertEncoderLayer(GradientCheckpointingLayer):
         return (hidden_states,) + attn_outputs[1:]  # add attentions if outputted
 
 
-@auto_docstring
 class ModernBertPreTrainedModel(PreTrainedModel):
     config: ModernBertConfig
     base_model_prefix = "model"
@@ -835,7 +832,6 @@ def _pad_modernbert_output(
     return padded_inputs
 
 
-@auto_docstring
 class ModernBertModel(ModernBertPreTrainedModel):
     def __init__(self, config: ModernBertConfig):
         super().__init__(config)
@@ -859,7 +855,6 @@ class ModernBertModel(ModernBertPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embeddings.tok_embeddings = value
 
-    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -1061,11 +1056,6 @@ class ModernBertPredictionHead(nn.Module):
         return self.norm(self.act(self.dense(hidden_states)))
 
 
-@auto_docstring(
-    custom_intro="""
-    The ModernBert Model with a decoder head on top that is used for masked language modeling.
-    """
-)
 class ModernBertForMaskedLM(ModernBertPreTrainedModel):
     _tied_weights_keys = ["decoder.weight"]
 
@@ -1094,7 +1084,6 @@ class ModernBertForMaskedLM(ModernBertPreTrainedModel):
     def compiled_head(self, output: torch.Tensor) -> torch.Tensor:
         return self.decoder(self.head(output))
 
-    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -1241,11 +1230,7 @@ class ModernBertForMaskedLM(ModernBertPreTrainedModel):
         )
 
 
-@auto_docstring(
-    custom_intro="""
-    The ModernBert Model with a sequence classification head on top that performs pooling.
-    """
-)
+
 class ModernBertForSequenceClassification(ModernBertPreTrainedModel):
     def __init__(self, config: ModernBertConfig):
         super().__init__(config)
@@ -1260,7 +1245,6 @@ class ModernBertForSequenceClassification(ModernBertPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -1384,11 +1368,6 @@ class ModernBertForSequenceClassification(ModernBertPreTrainedModel):
         )
 
 
-@auto_docstring(
-    custom_intro="""
-    The ModernBert Model with a token classification head on top, e.g. for Named Entity Recognition (NER) tasks.
-    """
-)
 class ModernBertForTokenClassification(ModernBertPreTrainedModel):
     def __init__(self, config: ModernBertConfig):
         super().__init__(config)
@@ -1402,7 +1381,6 @@ class ModernBertForTokenClassification(ModernBertPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -1481,7 +1459,7 @@ class ModernBertForTokenClassification(ModernBertPreTrainedModel):
         )
 
 
-@auto_docstring
+
 class ModernBertForQuestionAnswering(ModernBertPreTrainedModel):
     def __init__(self, config: ModernBertConfig):
         super().__init__(config)
@@ -1494,7 +1472,6 @@ class ModernBertForQuestionAnswering(ModernBertPreTrainedModel):
 
         self.post_init()
 
-    @auto_docstring
     def forward(
         self,
         input_ids: torch.Tensor | None,
@@ -1577,11 +1554,6 @@ class ModernBertForQuestionAnswering(ModernBertPreTrainedModel):
         )
 
 
-@auto_docstring(
-    custom_intro="""
-    The ModernBert Model with a multiple choice classification head on top (a linear layer on top of the pooled output and a softmax) e.g. for RocStories/SWAG tasks.
-    """
-)
 class ModernBertForMultipleChoice(ModernBertPreTrainedModel):
     def __init__(self, config: ModernBertConfig):
         super().__init__(config)
@@ -1595,7 +1567,6 @@ class ModernBertForMultipleChoice(ModernBertPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,

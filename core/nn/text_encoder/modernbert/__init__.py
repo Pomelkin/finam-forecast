@@ -13,9 +13,10 @@
 # limitations under the License.
 from typing import TYPE_CHECKING
 
-from transformers.utils import _LazyModule
+from transformers.utils.import_utils import _LazyModule
 from transformers.utils.import_utils import define_import_structure
-
+from .configuration_modernbert import ModernBertConfig
+from .modeling_modernbert import ModernBertModel
 
 if TYPE_CHECKING:
     from .configuration_modernbert import *

@@ -4,7 +4,7 @@ from typing import Literal
 import torch
 from transformers import AutoTokenizer
 
-from ...utils import setup_logger
+from core.utils import setup_logger
 
 
 logger = setup_logger(__name__)
@@ -13,12 +13,11 @@ logger = setup_logger(__name__)
 class NewsTokenizerWrapper:
     def __init__(
         self,
-        pretrained_model_name_or_path: str | Path = "deepvk/RuModernBERT-base",
         max_length: int = 8192,
         truncation_side: Literal["left", "right"] = "left",
-        no_news_token_id: int = 50285,
+        no_news_token_id: int = 50291,
     ) -> None:
-        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path)
+        tokenizer = AutoTokenizer.from_pretrained("deepvk/RuModernBERT-base", revision="patched-tokenizer", use_fast=True)
 
         if tokenizer.model_max_length != max_length:
             logger.warning(

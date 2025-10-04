@@ -23,12 +23,12 @@ from torch import nn
 from torch.nn.modules.module import _IncompatibleKeys
 
 from .configs import TimesFM_2p5_200M_Config
-from core.nn.text_encoder.modernbert import ModernBertConfig
-from core.nn.text_encoder.modernbert import ModernBertModel
-from core.nn.timesfm.layers import compute_causal_statistics
-from core.nn.timesfm.layers import ResidualBlock
-from core.nn.timesfm.layers import revin
-from core.nn.timesfm.layers import Transformer
+from core.nn.text_encoder import ModernBertConfig, ModernBertModel
+
+from .layers import compute_causal_statistics
+from .layers import ResidualBlock
+from .layers import revin
+from .layers import Transformer
 from core.utils import setup_logger
 
 
@@ -55,6 +55,7 @@ class TimesFM_2p5_Model(nn.Module):
         self.text_projection = nn.Linear(
             text_encoder_config.hidden_size,
             config.stacked_transformers.transformer.model_dims,
+            bias=False,
         )
 
         # Names constants.
@@ -75,6 +76,14 @@ class TimesFM_2p5_Model(nn.Module):
             ]
         )
         self.output_projection_point = ResidualBlock(config.output_projection_point)
+        return
+
+    def _init_projections(self) -> None:
+        torch.nn.init.normal_(
+            self.text_projection.weight,
+            mean=0.0,
+            std=self.text_encoder_config.initializer_range,
+        )
         return
 
     @property
@@ -151,16 +160,24 @@ class TimesFM_2p5_Model(nn.Module):
         if not path.is_dir():
             raise ValueError(f"{path} is not a directory")
 
-        text_encoder_config_dict = orjson.loads(
-            (path / "text_encoder_config.json").read_bytes()
-        )
+        possible_file_names = ["text_encoder_config.json", "config.json"]
+        for file_name in possible_file_names:
+            if (path / file_name).exists():
+                config_file = file_name
+                break
+        else:
+            raise FileNotFoundError(
+                f"Neither 'text_encoder_config.json' nor 'config.json' found in {path}"
+            )
+
+        text_encoder_config_dict = orjson.loads((path / config_file).read_bytes())
         text_encoder_config = ModernBertConfig.from_dict(text_encoder_config_dict)
         cls = cls(text_encoder_config=text_encoder_config).to(
             dtype=dtype, device=device
         )
 
         state_dict = load_file(path / "model.safetensors", device=str(device))
-        incompatible_keys = cls.load_state_dict(state_dict)
+        incompatible_keys = cls.load_state_dict(state_dict, strict=False)
         log_incompatible_keys(incompatible_keys)
         if compile:
             cls = torch.compile(cls, mode="reduce-overhead")
@@ -169,12 +186,18 @@ class TimesFM_2p5_Model(nn.Module):
     @classmethod
     def from_config(
         cls,
-        config: dict,
+        config: dict | ModernBertConfig,
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
         compile: bool = False,
     ) -> "TimesFM_2p5_Model":
-        text_encoder_config = ModernBertConfig.from_dict(config["text_encoder"])
+        if isinstance(config, dict):
+            if "text_encoder" in config:
+                config = config["text_encoder"]
+            text_encoder_config = ModernBertConfig.from_dict(config)  # type: ignore
+        else:
+            text_encoder_config = config
+
         cls = cls(text_encoder_config=text_encoder_config).to(
             dtype=dtype, device=device
         )
@@ -239,7 +262,5 @@ class TimesFM_2p5_Model(nn.Module):
         save_directory.mkdir(parents=True, exist_ok=True)
         state_dict = self.state_dict()
         save_file(state_dict, save_directory / "model.safetensors")
-        self.text_encoder_config.save_pretrained(
-            save_directory / "text_encoder_config.json"
-        )
+        self.text_encoder_config.save_pretrained(save_directory)
         return
