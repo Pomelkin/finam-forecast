@@ -2,16 +2,11 @@ from typing import Any
 
 from torch import nn
 
-from core.training.loss import ClipLoss
-from core.training.loss import SigLipLoss
-
 
 def create_params_groups(
     model: nn.Module,
     weight_decay: float,
     lr: float,
-    loss: SigLipLoss | ClipLoss,
-    loss_lr: float,
 ) -> list[dict]:
     """Create optimizer parameter groups for a PyTorch model with fine-grained weight decay control."""
     param_groups = []
@@ -20,21 +15,18 @@ def create_params_groups(
             continue
         param_group = {"params": param, "lr": lr}
 
-        if ("norm" in name) or ("bias" in name) or ("embedding" in name):
+        if (
+            ("norm" in name)
+            or ("bias" in name)
+            or ("embedding" in name)
+            or ("tokenizer" in name)
+            or ("output_projection_point" in name)
+            or ("ln" in name)
+            or ("scale" in name)
+        ):
             param_group["weight_decay"] = 0.0
         else:
             param_group["weight_decay"] = weight_decay
-        param_groups.append(param_group)
-
-    for name, param in loss.named_parameters():
-        if param.requires_grad is False:
-            continue
-        param_group = {
-            "params": param,
-            "lr": loss_lr,
-            "weight_decay": 0.0,
-            "loss_param": True,
-        }
         param_groups.append(param_group)
 
     fused_param_groups = _fuse_groups(param_groups)
