@@ -1,1 +1,3 @@
-# TODO: написать модуль данных
+from .datamodule import TimesFMDataModule
+
+__all__ = ["TimesFMDataModule"]

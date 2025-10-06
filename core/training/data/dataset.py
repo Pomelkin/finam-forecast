@@ -1,21 +1,15 @@
+import random
 from pathlib import Path
 
 import polars as pl
+import torch
 from torch.utils.data import Dataset
 
+from core.nn.text_encoder import NewsTokenizerWrapper
 
-class FinClipDataset(Dataset):
-    def __init__(
-        self,
-        path: str | Path,
-        ts_col_names: list[str],
-        tokens_col_name: str,
-        text_cls_token: int,
-        text_sep_token: int,
-        text_max_length: int,
-        ts_seq_len: int,
-        ts_num_channels: int,
-    ) -> None:
+
+class TimesFMDataset(Dataset):
+    def __init__(self, path: str | Path, news_tokenizer: NewsTokenizerWrapper) -> None:
         if isinstance(path, str):
             path = Path(path)
 
@@ -26,34 +20,139 @@ class FinClipDataset(Dataset):
 
         self.df: pl.DataFrame | None = None
         self.path = path
-        self.ts_col_names = ts_col_names
-        self.tokens_col_name = tokens_col_name
+        self.news_tokenizer = news_tokenizer
 
-        self.text_cls_token = text_cls_token
-        self.text_sep_token = text_sep_token
-        self.text_max_length = text_max_length
-        self.ts_seq_len = ts_seq_len
-        self.ts_num_channels = ts_num_channels
+        self.output_patch_len = 128
+        self.input_patch_len = 32
+        self.slice_len = 384
+        self.num_slices_per_ticker = 40
+        self.idx2ticker = self.prepare()
         return
 
+    def prepare(self) -> dict[int, str]:
+        df = self._load_df()
+        tickers = df["ticker"].unique().sort().to_list()
+        idx2ticker = {i: t for i, t in enumerate(tickers)}
+        del df
+        return idx2ticker
+
     def _load_df(self) -> pl.DataFrame:
-        df = pl.read_ipc(
-            self.path,
-            memory_map=True,
-            columns=self.ts_col_names + [self.tokens_col_name],
-        )
+        df = pl.read_ipc(self.path, memory_map=True).sort("begin")
         return df
 
-    # def __getitem__(self, index) -> dict[str, torch.Tensor]:
-    #     if self.df is None:
-    #         self.df = self._load_df()
+    def __len__(self) -> int:
+        return len(self.idx2ticker) * self.num_slices_per_ticker
 
-    #     row = self.df.row(index, named=True)
+    def __getitem__(self, index) -> dict[str, torch.Tensor]:
+        if self.df is None:
+            self.df = self._load_df()
+        ticker_idx, _ = divmod(index, self.num_slices_per_ticker)
+        ticker = self.idx2ticker[ticker_idx]
+        slice_len = self.slice_len
 
-    #     tokens: list[int] = row[self.tokens_col_name]
-    #     if len(tokens) > self.text_max_length - 2:
-    #         tokens = tokens[: self.text_max_length - 2]
-    #     tokens = [self.text_cls_token] + tokens + [self.text_sep_token]
-    #     tokens_t = torch.tensor(tokens, dtype=torch.long)
+        ticker_df = self.df.filter(pl.col("ticker") == ticker).sort("begin")
 
-    #     ts_seq_len: list[float] = row[self.ts_col_name]
+        start_idx = random.randint(
+            0, max(0, len(ticker_df) - slice_len - 1 - self.output_patch_len)
+        )
+        end_idx = start_idx + slice_len + self.output_patch_len
+
+        slice_df = ticker_df[start_idx:end_idx]
+
+        ts = slice_df["close"].to_torch().float()
+
+        tokens = slice_df["tokenized"].to_list()[:slice_len]
+
+        inputs_ts = ts[:slice_len]
+        mask_ts = torch.zeros_like(inputs_ts)
+        if (pad_len := -(len(inputs_ts)) % self.input_patch_len) != 0:
+            inputs_ts = torch.cat(
+                [
+                    torch.zeros(
+                        pad_len,
+                        device=inputs_ts.device,
+                    ),
+                    inputs_ts,
+                ],
+                dim=0,
+            )
+            mask_ts = torch.cat(
+                [
+                    torch.ones(
+                        pad_len,
+                        device=mask_ts.device,
+                        dtype=torch.bool,
+                    ),
+                    mask_ts,
+                ],
+                dim=0,
+            )
+        patch_count = len(inputs_ts) // self.input_patch_len
+        targets = torch.zeros(
+            patch_count, self.output_patch_len, device=inputs_ts.device
+        )
+        texts_per_tokens: list[torch.Tensor] = []
+        for i in range(1, patch_count + 1):
+            targets[i - 1] = ts[
+                i * self.input_patch_len : i * self.input_patch_len
+                + self.output_patch_len
+            ]
+
+            texts_per_token = tokens[
+                (i - 1) * self.input_patch_len : i * self.input_patch_len
+            ]
+            formatted_tokens = self.news_tokenizer.apply_format_to_tokens(
+                texts_per_token
+            )
+            texts_per_tokens.append(formatted_tokens)
+        texts_per_tokens_t = torch.nn.utils.rnn.pad_sequence(
+            texts_per_tokens,
+            batch_first=True,
+            padding_value=self.news_tokenizer.tokenizer.pad_token_id,  # type: ignore
+        )
+        return {
+            "inputs_ts": inputs_ts,
+            "targets": targets,
+            "mask_ts": mask_ts,
+            "texts_per_tokens": texts_per_tokens_t,
+        }
+
+
+def collate_fn(
+    batch: list[dict[str, torch.Tensor]],
+    text_pad_token_id: int,
+    text_model_max_length: int,
+) -> dict[str, torch.Tensor]:
+    inputs_ts = torch.stack([item["inputs_ts"] for item in batch], dim=0)
+    mask_ts = torch.stack([item["mask_ts"] for item in batch], dim=0)
+    targets = torch.stack([item["targets"] for item in batch], dim=0)
+
+    texts = [item["texts_per_tokens"] for item in batch]
+    max_L = min(max(t.size(-1) for t in texts), text_model_max_length)
+    texts_clamped: list[torch.Tensor] = []
+    for t in texts:
+        # оставляем правую часть длиной max_L
+        if t.size(-1) > max_L:
+            t = t[..., -max_L:]
+        # добиваем слева PAD токенами до max_L
+        elif t.size(-1) < max_L:
+            pad_len = max_L - t.size(-1)
+            pad = torch.full(
+                (t.size(0), pad_len), text_pad_token_id, dtype=t.dtype, device=t.device
+            )
+            t = torch.cat([pad, t], dim=-1)
+        texts_clamped.append(t)
+
+    inputs_text = torch.nn.utils.rnn.pad_sequence(
+        texts_clamped,
+        batch_first=True,
+        padding_value=text_pad_token_id,
+    )[..., -text_model_max_length:]
+    mask_text = (inputs_text != text_pad_token_id).long()
+    return {
+        "inputs_ts": inputs_ts,
+        "mask_ts": mask_ts,
+        "targets": targets,
+        "inputs_text": inputs_text.long(),
+        "mask_text": mask_text.long(),
+    }
