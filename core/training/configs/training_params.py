@@ -4,10 +4,9 @@ from pydantic import BaseModel
 from pydantic import Field
 
 from .config_mixins import ConfigMixin
-from core.utils import format_filename
 from core.utils import setup_logger
 
-logger = setup_logger(format_filename(__file__))
+logger = setup_logger()
 
 PRECISION = Literal[
     64,

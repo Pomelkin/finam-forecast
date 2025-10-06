@@ -17,9 +17,9 @@ def setup_checkpoint_callback(
 
     if dirpath.exists():
         if is_main_process():
-            logger.warn(f"Checkpoint directory {dirpath} already exists.")
+            logger.warning(f"Checkpoint directory {dirpath} already exists.")
             rmtree(dirpath)
-            logger.warn(f"Removed existing checkpoint directory {dirpath}.")
+            logger.warning(f"Removed existing checkpoint directory {dirpath}.")
     else:
         logger.info(f"Creating checkpoint directory {dirpath}.")
         dirpath.mkdir(parents=True, exist_ok=True)

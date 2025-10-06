@@ -14,9 +14,9 @@ def setup_tb_logger(
 
     if runs_dir.exists():
         if is_main_process():
-            logger.warn(f"TensorBoard log directory {runs_dir} already exists.")
+            logger.warning(f"TensorBoard log directory {runs_dir} already exists.")
             rmtree(runs_dir)
-            logger.warn(f"Removed existing TensorBoard log directory {runs_dir}.")
+            logger.warning(f"Removed existing TensorBoard log directory {runs_dir}.")
     else:
         logger.info(f"Creating TensorBoard log directory {runs_dir}.")
         runs_dir.mkdir(parents=True, exist_ok=True)

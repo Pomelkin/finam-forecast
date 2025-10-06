@@ -12,7 +12,7 @@ def scale_lrs_for_distributed(
     group: dist.ProcessGroup | None = None,
     config_name: str = "",
 ) -> None:
-    logger = setup_logger("LR Dist Scaler", add_rank=True)
+    logger = setup_logger("LR Dist Scaler")
 
     world_size = dist.get_world_size(group=group)
 

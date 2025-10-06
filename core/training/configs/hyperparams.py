@@ -1,4 +1,3 @@
-from typing import Literal
 from warnings import warn
 
 from pydantic import BaseModel
@@ -8,7 +7,7 @@ from pydantic import model_validator
 from .config_mixins import ConfigMixin
 from core.utils import setup_logger
 
-logger = setup_logger(__file__)
+logger = setup_logger()
 
 
 class Optimizer(BaseModel):
@@ -36,7 +35,7 @@ class Lr(BaseModel):
         elif (
             (self.warmup_value is not None) or (self.warmup_iters_ratio is not None)
         ) and (not self.use_scheduler):
-            logger.warn(
+            logger.warning(
                 "use_scheduler is False, warmup_value and warmup_iters_ratio will be ignored."
             )
             self.warmup_value = None
@@ -48,7 +47,7 @@ class Lr(BaseModel):
         if self.use_scheduler and (self.final_value is None):
             raise ValueError("If use_scheduler is True, final_value must be provided.")
         if (not self.use_scheduler) and (self.final_value is not None):
-            logger.warn("use_scheduler is False, final_value will be ignored.")
+            logger.warning("use_scheduler is False, final_value will be ignored.")
             self.final_value = None
         return self
 
@@ -68,11 +67,9 @@ class WeightDecay(BaseModel):
 
 
 class Hyperparams(ConfigMixin):
-    loss_type: Literal["clip", "siglip"]
     grad_clip_val: float | None = Field(default=None, gt=0, validate_default=False)
     optimizer: Optimizer = Optimizer()
     lr: Lr
-    loss_lr: Lr
     weight_decay: WeightDecay
 
     @model_validator(mode="after")
