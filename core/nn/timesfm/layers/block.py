@@ -50,13 +50,17 @@ def make_attn_mask(
 
 def ce_attention_mask(
     query_length: int,
+    kv_length: int,
+    batch_size: int,
     num_heads: int,
-    kv_mask: torch.Tensor,
 ) -> torch.Tensor:
     """Makes attention mask for cross-encoder."""
     # B, T -> B, H, Q, T
-    mask = kv_mask[:, None, None, :].expand(-1, num_heads, query_length, -1).bool()
-    return mask
+    q_idx = torch.arange(query_length)[None, None, :, None]  # [1,1,Q,1]
+    k_idx = torch.arange(kv_length)[None, None, None, :]  # [1,1,1,K]
+    causal_mask = q_idx >= k_idx
+    causal_mask = causal_mask.to(torch.bool).expand(batch_size, num_heads, -1, -1)
+    return causal_mask
 
 
 class RotaryPositionalEmbedding(nn.Module):
@@ -65,6 +69,7 @@ class RotaryPositionalEmbedding(nn.Module):
     def __init__(
         self,
         embedding_dims: int,
+        max_seq_len: int,
         min_timescale: float = 1.0,
         max_timescale: float = 10000.0,
     ):
@@ -72,13 +77,16 @@ class RotaryPositionalEmbedding(nn.Module):
         self.embedding_dims = embedding_dims
         self.min_timescale = min_timescale
         self.max_timescale = max_timescale
+        self.register_buffer("max_seq_len", torch.tensor(0))
 
     def forward(
         self,
         inputs: torch.Tensor,
         position: torch.Tensor | None = None,
-    ):
+    ) -> torch.Tensor:
         """Generates a JTensor of sinusoids with different frequencies."""
+        original_dtype = inputs.dtype
+        inputs = inputs.to(torch.float32)
         if self.embedding_dims != inputs.shape[-1]:
             raise ValueError(
                 "The embedding dims of the rotary position embedding"
@@ -95,6 +103,12 @@ class RotaryPositionalEmbedding(nn.Module):
         ).to(inputs.device)
         if position is None:
             seq_length = inputs.shape[1]
+            if seq_length > self.max_seq_len:
+                if self.training:
+                    self.max_seq_len = torch.tensor(seq_length)
+                else:
+                    scale = torch.tensor(seq_length) / self.max_seq_len
+                    timescale = timescale * (1 / scale)
             position = torch.arange(
                 seq_length, dtype=torch.float32, device=inputs.device
             )[None, :]
@@ -114,7 +128,8 @@ class RotaryPositionalEmbedding(nn.Module):
         first_half, second_half = torch.chunk(inputs, 2, dim=-1)
         first_part = first_half * cos - second_half * sin
         second_part = second_half * cos + first_half * sin
-        return torch.cat([first_part, second_part], dim=-1)
+        inputs_with_pos = torch.cat([first_part, second_part], dim=-1)
+        return inputs_with_pos.to(original_dtype)
 
 
 def _dot_product_attention(
@@ -226,6 +241,7 @@ class MultiHeadAttention(nn.Module):
         self.use_rotary_position_embeddings = use_rotary_position_embeddings
         if self.use_rotary_position_embeddings:
             self.rotary_position_embedding = RotaryPositionalEmbedding(
+                max_seq_len=10,
                 embedding_dims=self.head_dim,
             )
 
@@ -315,9 +331,7 @@ class MultiHeadCrossAttention(nn.Module):  # new block
                 f"'num_heads' heads ({self.num_heads})."
             )
 
-        self.kv_proj = nn.Linear(
-            self.in_features, 2 * self.in_features, bias=use_bias
-        )
+        self.kv_proj = nn.Linear(self.in_features, 2 * self.in_features, bias=use_bias)
         self.q_proj = nn.Linear(self.in_features, self.in_features, bias=use_bias)
         self.out = nn.Linear(self.in_features, self.in_features, bias=use_bias)
 
@@ -326,7 +340,12 @@ class MultiHeadCrossAttention(nn.Module):  # new block
 
         self.use_rotary_position_embeddings = use_rotary_position_embeddings
         if self.use_rotary_position_embeddings:
-            self.rotary_position_embedding = RotaryPositionalEmbedding(
+            self.ts_rotary_position_embedding = RotaryPositionalEmbedding(
+                max_seq_len=10,
+                embedding_dims=self.head_dim,
+            )
+            self.text_rotary_position_embedding = RotaryPositionalEmbedding(
+                max_seq_len=10,
                 embedding_dims=self.head_dim,
             )
         self._init_weights()
@@ -345,7 +364,6 @@ class MultiHeadCrossAttention(nn.Module):  # new block
         inputs_ts: torch.Tensor,
         patch_mask: torch.Tensor,
         inputs_text: torch.Tensor,
-        text_mask: torch.Tensor,
     ) -> torch.Tensor:
         b_ts, n_patches_ts, _ = inputs_ts.shape
         b_text, n_tokens_text, _ = inputs_text.shape
@@ -366,15 +384,21 @@ class MultiHeadCrossAttention(nn.Module):  # new block
                 torch.arange(n_patches_ts, device=inputs_ts.device)[None, :]
                 - num_masked[:, None]
             )
-            positions_text = text_mask.cumsum(dim=1) - 1
-            query = self.rotary_position_embedding(query, position_ts)
-            key = self.rotary_position_embedding(key, positions_text)
-            
+            positions_text = torch.arange(n_tokens_text, device=inputs_text.device)[
+                None, :
+            ]
+            query = self.ts_rotary_position_embedding(query, position_ts)
+            key = self.text_rotary_position_embedding(key, positions_text)
+
         query = self.query_ln(query)
         key = self.key_ln(key)
 
+        batch_size = query.size(0)
         attn_mask = ce_attention_mask(
-            query_length=n_patches_ts, num_heads=self.num_heads, kv_mask=text_mask
+            query_length=n_patches_ts,
+            kv_length=n_tokens_text,
+            num_heads=self.num_heads,
+            batch_size=batch_size,
         )
 
         x = self.attention_fn(
@@ -452,13 +476,12 @@ class Transformer(nn.Module):
             self.activation = nn.Identity()
         else:
             raise ValueError(f"Activation: {config.ff_activation} not supported.")
-    
+
     def forward(
         self,
         input_embeddings_ts: torch.Tensor,
         patch_mask_ts: torch.Tensor,
         input_embedding_text: torch.Tensor,
-        token_mask_text: torch.Tensor,
     ) -> torch.Tensor:
         attn_output = self.attn(
             inputs_q=self.pre_attn_ln(input_embeddings_ts),
@@ -472,7 +495,6 @@ class Transformer(nn.Module):
             inputs_ts=self.pre_crossattn_ln_ts(attn_output),
             patch_mask=patch_mask_ts,
             inputs_text=self.pre_crossattn_ln_text(input_embedding_text),
-            text_mask=token_mask_text,
         )
 
         attn_output = self.post_crossattn_ln(attn_output) + attn_output_skip

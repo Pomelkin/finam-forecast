@@ -17,35 +17,40 @@ from pathlib import Path
 
 import orjson
 import torch
+from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from safetensors.torch import save_file
 from torch import nn
 from torch.nn.modules.module import _IncompatibleKeys
+from transformers.models.modernbert import ModernBertConfig
+from transformers.models.modernbert import ModernBertModel
 
 from .configs import TimesFM_2p5_200M_Config
-from core.nn.text_encoder import ModernBertConfig, ModernBertModel
-
-
 from .layers import ResidualBlock
 from .layers import Transformer
-from core.utils import setup_logger
 from .utils import compute_causal_statistics
 from .utils import revin
-from .utils import update_running_stats
+from core.utils import setup_logger
 
 
-logger = setup_logger(__file__)
+logger = setup_logger(fmt="only_message")
 
 
-def log_incompatible_keys(incompatible_keys: _IncompatibleKeys) -> None:
+def log_incompatible_keys(
+    incompatible_keys: _IncompatibleKeys, model_specific_msg: str = ""
+) -> None:
     if incompatible_keys.missing_keys:
-        logger.warning(f"Missing keys: {incompatible_keys.missing_keys}")
+        logger.warning(
+            f"Missing keys {model_specific_msg}: {incompatible_keys.missing_keys}"
+        )
     if incompatible_keys.unexpected_keys:
-        logger.warning(f"Unexpected keys: {incompatible_keys.unexpected_keys}")
+        logger.warning(
+            f"Unexpected keys {model_specific_msg}: {incompatible_keys.unexpected_keys}"
+        )
     return
 
 
-class TimesFM_2p5_Model(nn.Module):
+class NewsTimesFM_2p5_Model(nn.Module):
     """TimesFM 2.5 with 200M parameters."""
 
     def __init__(self, text_encoder_config: ModernBertConfig) -> None:
@@ -104,7 +109,6 @@ class TimesFM_2p5_Model(nn.Module):
         inputs_ts: torch.Tensor,
         masks_ts: torch.Tensor,
         inputs_text: torch.Tensor,
-        mask_text: torch.Tensor,
     ) -> torch.Tensor:
         B = inputs_ts.shape[0]
         tokenizer_inputs = torch.cat([inputs_ts, masks_ts.to(inputs_ts.dtype)], dim=-1)
@@ -116,7 +120,6 @@ class TimesFM_2p5_Model(nn.Module):
                 input_embeddings_ts=output_embeddings,
                 patch_mask_ts=masks_ts[..., -1],
                 input_embedding_text=inputs_text,
-                token_mask_text=mask_text,
             )
         output_ts = self.output_projection_point(output_embeddings)
         output_ts = output_ts.reshape(B, -1, self.output_patch_len, self.num_quantiles)
@@ -129,10 +132,26 @@ class TimesFM_2p5_Model(nn.Module):
         inputs_text: torch.Tensor,
         mask_text: torch.Tensor,
     ) -> torch.Tensor:
+        B, patch_len, T = inputs_text.shape
+        flattened_inputs_text = inputs_text.reshape(-1, T)
+        flattened_mask_text = mask_text.reshape(-1, T)
         text_embeddings = self.text_encoder(
-            input_ids=inputs_text, attention_mask=mask_text
+            input_ids=flattened_inputs_text, attention_mask=flattened_mask_text
         ).last_hidden_state
-        text_embeddings = self.text_projection(text_embeddings)
+        text_embeddings = text_embeddings.reshape(
+            B, patch_len, T, -1
+        )  # (B, patch_len, T, hidden)
+        mask_text = mask_text.to(text_embeddings.dtype)  # (B, patch_len, T)
+        text_embeddings = text_embeddings * mask_text.unsqueeze(
+            -1
+        )  # (B, patch_len, T, hidden) * (B, patch_len, T, 1)
+        mean_pooled = text_embeddings.sum(dim=2) / (
+            mask_text.sum(dim=2, keepdim=True) + 1e-8
+        )  # (B, patch_len, hidden)
+
+        text_embeddings = self.text_projection(
+            mean_pooled
+        )  # (B, patch_len, model_dims)
 
         batch_size, context_len = inputs_ts.shape[0], inputs_ts.shape[1]
         if (pad_len := -(context_len) % self.input_patch_len) != 0:
@@ -168,28 +187,9 @@ class TimesFM_2p5_Model(nn.Module):
         inputs_ts = torch.reshape(inputs_ts, (batch_size, -1, self.input_patch_len))
         mask_ts = torch.reshape(mask_ts, (batch_size, -1, self.input_patch_len))
 
-        num_input_patches = inputs_ts.shape[1]
-        n = torch.zeros(batch_size, device=inputs_ts.device)
-        mu = torch.zeros(batch_size, device=inputs_ts.device)
-        sigma = torch.zeros(batch_size, device=inputs_ts.device)
-        context_mu = torch.zeros(
-            (batch_size, num_input_patches),
-            device=inputs_ts.device,
-        )
-        context_sigma = torch.zeros(
-            (batch_size, num_input_patches),
-            device=inputs_ts.device,
-        )
-
-        for i in range(num_input_patches):
-            n, mu, sigma = update_running_stats(
-                n, mu, sigma, inputs_ts[:, i], mask_ts[:, i]
-            )
-            context_mu[:, i] = mu
-            context_sigma[:, i] = sigma
         causal_means, causal_scale = compute_causal_statistics(inputs_ts, mask_ts)
         normalized_inputs = revin(inputs_ts, causal_means, causal_scale, reverse=False)
-        normalized_output_ts = self(normalized_inputs, mask_ts, text_embeddings, mask_text)
+        normalized_output_ts = self(normalized_inputs, mask_ts, text_embeddings)
         normalized_output_ts = normalized_output_ts[..., self.pred_quantile_index]
         last_causal_mean = causal_means[..., -1].unsqueeze(-1)
         last_causal_scale = causal_scale[..., -1].unsqueeze(-1)
@@ -199,13 +199,72 @@ class TimesFM_2p5_Model(nn.Module):
         return output_ts
 
     @classmethod
+    def from_hf(
+        cls,
+        dtype: torch.dtype | None = None,
+        device: torch.device | None = None,
+        compile: bool = False,
+    ) -> "NewsTimesFM_2p5_Model":
+        if device is None:
+            device = torch.get_default_device()
+        if dtype is None:
+            dtype = torch.get_default_dtype()
+
+        ts_encoder = "google/timesfm-2.5-200m-pytorch"
+        text_encoder = "deepvk/RuModernBERT-base"
+
+        text_encoder_config_path = hf_hub_download(
+            repo_id=text_encoder, filename="config.json", revision="patched-tokenizer"
+        )
+        text_encoder_config = ModernBertConfig.from_json_file(text_encoder_config_path)
+
+        cls = cls(text_encoder_config=text_encoder_config).to(
+            dtype=dtype, device=device
+        )
+
+        ts_encoder_weights_path = hf_hub_download(
+            repo_id=ts_encoder, filename="model.safetensors"
+        )
+        state_dict = load_file(ts_encoder_weights_path, device=str(device))
+        incompatible_keys = cls.load_state_dict(state_dict, strict=False)
+        log_incompatible_keys(
+            incompatible_keys, model_specific_msg="for TimesFM_2p5_Model"
+        )
+
+        text_encoder_weights_path = hf_hub_download(
+            repo_id=text_encoder,
+            filename="model.safetensors",
+            revision="patched-tokenizer",
+        )
+        text_encoder_state_dict = load_file(
+            text_encoder_weights_path, device=str(device)
+        )
+        if any("model." in k for k in text_encoder_state_dict.keys()):
+            text_encoder_state_dict_temp = {}
+            for k, v in text_encoder_state_dict.items():
+                if k.startswith("model."):
+                    new_key = k[len("model.") :]
+                    text_encoder_state_dict_temp[new_key] = v
+                else:
+                    text_encoder_state_dict_temp[k] = v
+            text_encoder_state_dict = text_encoder_state_dict_temp
+        incompatible_keys = cls.text_encoder.load_state_dict(
+            text_encoder_state_dict, strict=False
+        )
+        log_incompatible_keys(incompatible_keys, model_specific_msg="for TextEncoder")
+
+        if compile:
+            cls = torch.compile(cls, mode="reduce-overhead")
+        return cls  # type: ignore
+
+    @classmethod
     def from_pretrained(
         cls,
         path: str | Path,
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
         compile: bool = False,
-    ) -> "TimesFM_2p5_Model":
+    ) -> "NewsTimesFM_2p5_Model":
         if device is None:
             device = torch.get_default_device()
         if dtype is None:
@@ -249,7 +308,7 @@ class TimesFM_2p5_Model(nn.Module):
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
         compile: bool = False,
-    ) -> "TimesFM_2p5_Model":
+    ) -> "NewsTimesFM_2p5_Model":
         if isinstance(config, dict):
             if "text_encoder" in config:
                 config = config["text_encoder"]
@@ -272,7 +331,7 @@ class TimesFM_2p5_Model(nn.Module):
         device: torch.device | None = None,
         compile: bool = False,
         model_keys_starts_with_prefix: str = "model.",
-    ) -> "TimesFM_2p5_Model":
+    ) -> "NewsTimesFM_2p5_Model":
         if device is None:
             device = torch.get_default_device()
         if dtype is None:

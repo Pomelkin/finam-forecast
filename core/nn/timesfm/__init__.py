@@ -13,6 +13,6 @@
 # limitations under the License.
 """TimesFM API."""
 
-from .timesfm import TimesFM_2p5_Model
+from .timesfm import NewsTimesFM_2p5_Model
 
-__all__ = ["TimesFM_2p5_Model"]
+__all__ = ["NewsTimesFM_2p5_Model"]

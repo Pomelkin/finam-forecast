@@ -85,6 +85,7 @@ def compute_causal_statistics(
     minimum_scale: float = 0.1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     # Compute causal means at each time step
+    input_dtype = data.dtype
     B, T, C = data.shape
     data = data.reshape(B, -1)
     weights = weights.reshape(B, -1)
@@ -115,4 +116,4 @@ def compute_causal_statistics(
 
     causal_means = causal_means.reshape(B, T, C)
     causal_scale = causal_scale.reshape(B, T, C)
-    return causal_means, causal_scale
+    return causal_means.to(input_dtype), causal_scale.to(input_dtype)
