@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v5.0.0
+  rev: v6.0.0
   hooks:
     - id: check-symlinks
     - id: destroyed-symlinks
@@ -17,14 +17,14 @@ repos:
     - id: debug-statements
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.12.3
+  rev: v0.13.3
   hooks:
   - id: ruff
     types_or: [ python, pyi ]
     args: [ --fix ]
 
 - repo: https://github.com/hadolint/hadolint
-  rev: v2.13.1-beta
+  rev: v2.14.0
   hooks:
   - id: hadolint-docker
     types_or: [ dockerfile ]
@@ -46,7 +46,7 @@ repos:
     args: [ --py313-plus ]
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.12.3
+  rev: v0.13.3
   hooks:
   - id: ruff-format
     types_or:
@@ -54,7 +54,7 @@ repos:
     - pyi
 
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.7.20
+  rev: 0.8.23
   hooks:
   - id: uv-lock
     name: uv lock
