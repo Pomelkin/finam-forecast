@@ -16,6 +16,20 @@ repos:
     - id: detect-private-key
     - id: debug-statements
 
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.12.3
+  hooks:
+  - id: ruff
+    types_or: [ python, pyi ]
+    args: [ --fix ]
+
+- repo: https://github.com/hadolint/hadolint
+  rev: v2.13.1-beta
+  hooks:
+  - id: hadolint-docker
+    types_or: [ dockerfile ]
+
+
 - repo: https://github.com/asottile/reorder-python-imports
   rev: v3.15.0
   hooks:
@@ -34,9 +48,6 @@ repos:
 - repo: https://github.com/astral-sh/ruff-pre-commit
   rev: v0.12.3
   hooks:
-  - id: ruff
-    types_or: [ python, pyi ]
-    args: [ --fix ]
   - id: ruff-format
     types_or:
     - python
@@ -47,13 +58,6 @@ repos:
   hooks:
   - id: uv-lock
     name: uv lock
-
-- repo: https://github.com/hadolint/hadolint
-  rev: v2.13.1-beta
-  hooks:
-  - id: hadolint-docker
-    types_or: [ dockerfile ]
-
 
 # - repo: https://github.com/hoxbro/clean_notebook
 #   rev: v0.1.17
