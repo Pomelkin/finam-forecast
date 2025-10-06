@@ -1,3 +1,3 @@
-from .finclip_training import FinClipTrainingModule
+from .timesfm_training import NewsTimesFMTrainingModule
 
-__all__ = ["FinClipTrainingModule"]
+__all__ = ["NewsTimesFMTrainingModule"]

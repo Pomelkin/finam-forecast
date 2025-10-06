@@ -1,4 +1,4 @@
-import copy
+import random
 from collections.abc import Callable
 from collections.abc import Mapping
 from pathlib import Path
@@ -6,38 +6,49 @@ from typing import Any
 from typing import override
 
 import lightning as L
+import plotly.express as px
 import torch
 import torch.distributed as dist
-from clearml import OutputModel
 from clearml import Task
 from lightning.pytorch.strategies import FSDPStrategy
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
+from torch import nn
 from torch.distributed import ProcessGroup
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.tensor import DTensor
 from torch.optim import AdamW
 from torchmetrics import Metric
 from torchmetrics import MetricCollection
+from torchmetrics.regression import MeanAbsoluteError
+from torchmetrics.regression import MeanAbsolutePercentageError
+from torchmetrics.regression import MeanSquaredError
 
-from core.nn import FinClipModel
+from core.nn import NewsTimesFM_2p5_Model
 from core.training.configs import Hyperparams
-from core.training.loss import ClipLoss
-from core.training.loss import SigLipLoss
+from core.training.distributed_utils import is_main_process
 from core.training.lr_scaling import scale_lrs_for_distributed
 from core.training.metrics_formatting import apply_suffix
-from core.training.params_ops import create_params_groups
+from core.training.params_groups import create_params_groups
 from core.training.schedulers import CompositeScheduler
 from core.training.schedulers import CosineScheduler
 from core.training.steps_estimation import estimate_total_steps
 from core.utils import setup_logger
 
-logger = setup_logger(__file__)
+logger = setup_logger()
 
 
-class FinClipTrainingModule(L.LightningModule):
-    def __init__(
-        self, hyperparams: Hyperparams | dict, model_path: str | Path, task: Task
-    ) -> None:
+def metrics_factory() -> MetricCollection:
+    metrics = MetricCollection(
+        [
+            MeanAbsolutePercentageError(),
+            MeanSquaredError(),
+            MeanAbsoluteError(),
+        ]
+    )
+    return metrics
+
+
+class NewsTimesFMTrainingModule(L.LightningModule):
+    def __init__(self, hyperparams: Hyperparams | dict, task: Task) -> None:
         super().__init__()
         if isinstance(hyperparams, dict):
             hyperparams = Hyperparams.model_validate(hyperparams)
@@ -46,21 +57,15 @@ class FinClipTrainingModule(L.LightningModule):
                 "hyperparams": hyperparams.model_dump(),
             }
         )
-
-        match hyperparams.loss_type:
-            case "clip":
-                self.loss = ClipLoss()
-            case "siglip":
-                self.loss = SigLipLoss()
-            case _:
-                raise ValueError(f"Unknown loss type: {hyperparams.loss_type}")
+        self.training_metrics = metrics_factory()
+        self.validation_metrics = metrics_factory()
 
         self.hyperparams = hyperparams
-        self.model_path = model_path
-        self.task = task
+        self.loss = nn.MSELoss(reduction="mean")
 
-        self.model: FinClipModel | None = None
-        self.clearml_output_models: list[OutputModel] = []
+        self.model: NewsTimesFM_2p5_Model | None = None
+        self.task = task
+        self.val_outputs: list[dict[str, torch.Tensor]] = []
         return
 
     @property
@@ -98,7 +103,7 @@ class FinClipTrainingModule(L.LightningModule):
     def configure_model(self) -> None:
         if self.model is not None:
             return
-        self.model = FinClipModel.from_pretrained(self.model_path, strict=False)
+        self.model = NewsTimesFM_2p5_Model.from_hf(compile=False)
         return
 
     @override
@@ -113,17 +118,9 @@ class FinClipTrainingModule(L.LightningModule):
                 self.hyperparams.lr,
                 inv_scale=True,
                 group=self.process_group,
-                config_name="model",
-            )
-            scale_lrs_for_distributed(
-                self.hyperparams.loss_lr,
-                inv_scale=False,
-                group=self.process_group,
-                config_name="loss",
             )
 
         lr_cfg = self.hyperparams.lr
-        loss_lr_cfg = self.hyperparams.loss_lr
         wd_cfg = self.hyperparams.weight_decay
         optimizer_cfg = self.hyperparams.optimizer
 
@@ -132,15 +129,8 @@ class FinClipTrainingModule(L.LightningModule):
         else:
             lr = lr_cfg.base_value
 
-        if loss_lr_cfg.use_scheduler and loss_lr_cfg.warmup_value is not None:
-            loss_lr = loss_lr_cfg.warmup_value
-        else:
-            loss_lr = loss_lr_cfg.base_value
-
         weight_decay = wd_cfg.base_value
-        params_groups = create_params_groups(
-            self.model, weight_decay, lr, self.loss, loss_lr
-        )
+        params_groups = create_params_groups(self.model, weight_decay, lr)
 
         if optimizer_cfg is not None:
             adamw_beta1 = optimizer_cfg.adamw_beta1
@@ -166,18 +156,6 @@ class FinClipTrainingModule(L.LightningModule):
                 ignore_if_field="loss_param",
             )
             schedulers["lr"] = lr_scheduler
-        if loss_lr_cfg.use_scheduler:
-            loss_lr_scheduler = CosineScheduler(
-                optimizer,
-                param_group_field="lr",
-                total_iters=total_steps,
-                base_value=loss_lr_cfg.base_value,
-                final_value=loss_lr_cfg.final_value,  # type: ignore[assignment]
-                warmup_iters_ratio=loss_lr_cfg.warmup_iters_ratio,  # type: ignore[assignment]
-                warmup_value=loss_lr_cfg.warmup_value,  # type: ignore[assignment]
-                apply_if_field="loss_param",
-            )
-            schedulers["loss_lr"] = loss_lr_scheduler
         if wd_cfg.use_scheduler:
             weight_decay_scheduler = CosineScheduler(
                 optimizer=optimizer,
@@ -225,17 +203,6 @@ class FinClipTrainingModule(L.LightningModule):
     def on_before_optimizer_step(self, optimizer) -> None:
         if self.model is None:
             raise ValueError("Model must be configured before optimizer step.")
-
-        if dist.is_initialized():
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    param.grad.mul_(dist.get_world_size())
-                    logger.info(
-                        f"Parameter {name} gradient scaled. Params size: {param.shape}, dtype: {param.grad.dtype}, device: {param.grad.device}"
-                    )
-                else:
-                    logger.warning(f"Parameter {name} has no gradient.")
-
         if self.hyperparams.grad_clip_val is None:
             return
 
@@ -282,9 +249,6 @@ class FinClipTrainingModule(L.LightningModule):
                 add_dist_rank=False,
             )
 
-            if stage == "test":
-                self.log_to_output_models(dictionary)
-
         super().log_dict(
             dictionary,
             prog_bar,
@@ -301,107 +265,72 @@ class FinClipTrainingModule(L.LightningModule):
         )
         return
 
-    def add_output_model(self, output_model: OutputModel) -> None:
-        self.clearml_output_models.append(output_model)
-        return
-
-    def log_to_output_models(
+    def forward(
         self,
-        metrics: Mapping[str, Metric | torch.Tensor | int | float | DTensor]
-        | MetricCollection,
-    ) -> None:
-        metrics = copy.deepcopy(metrics)
-        if isinstance(metrics, MetricCollection):
-            processed_metrics = metrics.compute()
-        else:
-            processed_metrics: Mapping[str, torch.Tensor] = {}
-            for k, v in metrics.items():
-                if isinstance(v, Metric):
-                    proc_v = v.compute().to(self.device)
-                elif isinstance(v, DTensor):
-                    proc_v = v.to_local().to(self.device)
-                elif isinstance(v, float | int):
-                    proc_v = torch.tensor(v, dtype=torch.float32, device=self.device)
-                elif isinstance(v, torch.Tensor):
-                    proc_v = v.to(self.device)
-                else:
-                    raise TypeError(
-                        f"Unsupported metric type: {type(v)} for key: {k}. "
-                        "Expected torch.Tensor, float, or int."
-                    )
-                processed_metrics[k] = proc_v
-
-        if len(self.clearml_output_models) != 0:
-            if not dist.is_initialized() or dist.get_rank() == 0:
-                for output_model in self.clearml_output_models:
-                    if not isinstance(output_model, OutputModel):
-                        continue
-                    for key, value in processed_metrics.items():
-                        value = value.item()
-                        output_model.report_scalar(
-                            title="Metrics",
-                            series=key,
-                            value=value,
-                            iteration=self.model_logger_counter,
-                        )
-                self.model_logger_counter += 1
-
-        if dist.is_initialized():
-            dist.barrier()
-        return
-
-    def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        batch: dict[str, torch.Tensor],
+        calculate_loss_per_forecast_step: bool = False,
+    ) -> dict[str, torch.Tensor]:
         if self.model is None:
             raise ValueError("Model must be configured before forward pass.")
 
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
-        past_values = batch["past_values"]
-        past_observed_mask = batch["past_observed_mask"]
+        predictions = self.model.forecast(
+            inputs_ts=batch["inputs_ts"],
+            mask_ts=batch["mask_ts"],
+            inputs_text=batch["inputs_text"],
+            mask_text=batch["mask_text"],
+        )
 
-        output = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            past_values=past_values,
-            past_observed_mask=past_observed_mask,
-        )
-        loss, B = self.loss(
-            text_features=output["text_features"],
-            timeseries_features=output["timeseries_features"],
-            process_group=self.process_group,
-        )
-        return {"loss": loss, "B": B}
+        outputs = {}
+        if calculate_loss_per_forecast_step:
+            total_loss = 0.0
+            for i in range(predictions.shape[-1]):
+                step_loss = self.loss(
+                    predictions[..., i],
+                    batch["targets"][..., i].to(predictions.dtype),
+                )
+                outputs[f"for_step_loss_{i}"] = step_loss
+                total_loss += step_loss
+            total_loss /= predictions.shape[-1]
+        else:
+            total_loss = self.loss(
+                predictions,
+                batch["targets"].to(predictions.dtype),
+            )
+        outputs["loss"] = total_loss
+        outputs["predictions"] = predictions
+        outputs["targets"] = batch["targets"]
+        return outputs
 
     def training_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        outputs = self(batch)
-        loss = outputs["loss"]
-        B = outputs["B"]
-        d_loss = loss.detach()
+        outputs: dict[str, torch.Tensor] = self(batch)
+
+        metrics: dict[str, torch.Tensor] = self.training_metrics(
+            outputs["predictions"], outputs["targets"]
+        )
+        metrics.update({"loss": outputs["loss"].detach()})
 
         self.log_scheduled_values()
         self.log_dict(
-            {"loss": d_loss},
+            metrics,
             prog_bar=False,
             on_step=True,
             on_epoch=False,
             logger=True,
             sync_dist=False,
             stage="train",
-            batch_size=B,
         )
         self.log(
             "train_loss",
-            d_loss,
+            metrics["loss"],
             prog_bar=True,
             on_step=True,
             on_epoch=True,
             logger=False,
             sync_dist=True,
-            batch_size=B,
         )
-        return loss
+        return outputs["loss"]
 
     def log_scheduled_values(self) -> None:
         scheduler: CosineScheduler | CompositeScheduler = self.lr_schedulers()  # type: ignore
@@ -417,60 +346,65 @@ class FinClipTrainingModule(L.LightningModule):
         )
         return
 
-    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
-        outputs = self(batch)
+    def validation_step(
+        self, batch: dict[str, torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
+        outputs: dict[str, torch.Tensor] = self(batch)
 
-        loss = outputs["loss"]
-        B = outputs["B"]
-        d_loss = loss.detach()
+        metrics: dict[str, torch.Tensor] = self.validation_metrics(
+            outputs["predictions"], outputs["targets"]
+        )
+        metrics.update({"loss": outputs["loss"].detach()})
 
         self.log_dict(
-            {"loss": d_loss},
+            metrics,
             prog_bar=False,
             on_step=True,
             on_epoch=False,
             logger=True,
             sync_dist=True,
             stage="val",
-            batch_size=B,
         )
         self.log(
             "val_loss",
-            d_loss,
+            metrics["loss"],
             prog_bar=True,
             on_step=False,
             on_epoch=True,
             logger=False,
             sync_dist=True,
-            batch_size=B,
         )
-        return loss
 
-    def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
-        outputs = self(batch)
+        data_to_save = {
+            "predictions": outputs["predictions"][:, -2:].clone().detach().cpu(),
+            "targets": outputs["targets"][:, -2:].clone().detach().cpu(),
+        }
+        self.val_outputs.append(data_to_save)
+        return outputs["loss"]
 
-        loss = outputs["loss"]
-        B = outputs["B"]
-        d_loss = loss.detach()
+    def on_validation_epoch_end(self) -> None:
+        if is_main_process():
+            val_output = self.val_outputs[random.randint(0, len(self.val_outputs) - 1)]
+            predictions = val_output["predictions"]
+            targets = val_output["targets"]
 
-        self.log_dict(
-            {"loss": d_loss},
-            prog_bar=False,
-            on_step=True,
-            on_epoch=False,
-            logger=True,
-            sync_dist=True,
-            stage="test",
-            batch_size=B,
-        )
-        self.log(
-            "test_loss",
-            d_loss,
-            prog_bar=True,
-            on_step=False,
-            on_epoch=True,
-            logger=False,
-            sync_dist=True,
-            batch_size=B,
-        )
-        return loss
+            batch_idx = random.randint(0, predictions.size(0) - 1)
+
+            last_preds = predictions[batch_idx].view(-1).float().numpy()
+            last_targets = targets[batch_idx].view(-1).float().numpy()
+
+            fig = px.line()
+            fig.add_scatter(y=last_preds, mode="lines+markers", name="Prediction")
+            fig.add_scatter(y=last_targets, mode="lines+markers", name="Target")
+
+            self.task.get_logger().report_plotly(
+                title="Sample Prediction vs Target",
+                series="val",
+                iteration=self.current_epoch,
+                figure=fig,
+            )
+
+        if dist.is_initialized():
+            dist.barrier()
+        self.val_outputs = []
+        return
