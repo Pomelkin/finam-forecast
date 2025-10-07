@@ -45,8 +45,9 @@ def _check_cache(cache_path: Path, subsets: list[str]) -> COMMANDS:
 
             command = None
             for subset in subsets:
-                arrow_files = list(cache_path.glob(f"{subset}/*{subset}*.arrow"))
-                if len(arrow_files) != metadata.get(subset, 0):
+                arrow_files = list(cache_path.glob(f"*{subset}*.arrow"))
+                len_from_metadata = metadata.get(subset, 0)
+                if len(arrow_files) != len_from_metadata:
                     logger.warning(
                         f"Cache for subset '{subset}' is invalid (expected {metadata.get(subset, 0)} files, found {len(arrow_files)})."
                     )
@@ -79,7 +80,9 @@ def _create_cache(
     clearml_dataset.get_mutable_local_copy(target_folder=cache_path)
 
     for subset in subset_files.keys():
-        paths: list[Path] = list(cache_path.glob(f"{subset}/*{subset}*.parquet"))
+        paths: list[Path] = list(cache_path.glob(f"*{subset}*.parquet"))
+        if len(paths) == 0:
+            logger.warning(f"No *{subset}*.parquet files found for subset: {subset}")
         subset_files[subset].extend(paths)
 
     metadata = {}

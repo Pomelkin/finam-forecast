@@ -1,15 +1,15 @@
 trainer:
-    accelerator: "auto"
-    max_epochs: 30
-    strategy:
-      type: fsdp
-      param_dtype: bfloat16
-      reduce_dtype: float32
-      buffer_dtype: bfloat16
-    precision: "bf16-true"
-    accumulate_grad_batches: 1
-    val_check_interval: 0.25
-    devices: 8
+  accelerator: "auto"
+  max_epochs: 30
+  strategy:
+    type: fsdp
+    param_dtype: bfloat16
+    reduce_dtype: float32
+    buffer_dtype: bfloat16
+  precision: "bf16-true"
+  accumulate_grad_batches: 1
+  val_check_interval: 0.25
+  devices: 4
 early_stopping:
   monitor: "val_loss"
   patience: 8
