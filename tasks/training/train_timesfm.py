@@ -181,7 +181,6 @@ def train_timesfm(
     if fast_dev_run_ == 0:
         fast_dev_run_ = False
 
-    # TODO: изменить project_name, task_name
     task: Task = Task.init(
         project_name="Finam-FORECAST",
         task_name="NewsTimesFM Fine-tuning",
