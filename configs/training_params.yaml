@@ -1,0 +1,24 @@
+trainer:
+    accelerator: "auto"
+    max_epochs: 30
+    strategy:
+      type: fsdp
+      param_dtype: bfloat16
+      reduce_dtype: float32
+      buffer_dtype: bfloat16
+    precision: "bf16-true"
+    accumulate_grad_batches: 1
+    val_check_interval: 0.25
+    devices: 8
+early_stopping:
+  monitor: "val_loss"
+  patience: 8
+  min_delta: 0.01
+  mode: "min"
+checkpoint:
+  save_top_k: 4
+  monitor: "val_loss"
+  mode: "min"
+  filename: "{epoch:02d}-{val_loss:.2f}"
+model_id: 9d52ff04bf874618a81f7554c0d954be
+tokenizer_id: c84c36cfe62b41e7b4c3c9217beff551

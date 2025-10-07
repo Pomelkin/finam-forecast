@@ -1,0 +1,13 @@
+grad_clip_val: 3.0
+lr:
+  use_scheduler: true
+  warmup_iters_ratio: 0.15
+  warmup_value: 7e-5
+  base_value: 9e-5
+  final_value: 1e-5
+weight_decay:
+  use_scheduler: false
+  base_value: 0.001
+optimizer:
+  adamw_beta1: 0.9
+  adamw_beta2: 0.999
