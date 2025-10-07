@@ -87,6 +87,7 @@ class TimesFMDataModule(L.LightningDataModule):
             pin_memory=True,
             drop_last=True,
             num_workers=self.num_workers,
+            persistent_workers=True,
             collate_fn=partial(
                 collate_fn,
                 text_pad_token_id=self.new_tokenizer.tokenizer.pad_token_id,  # type: ignore
@@ -107,6 +108,7 @@ class TimesFMDataModule(L.LightningDataModule):
             pin_memory=True,
             drop_last=True,
             num_workers=self.num_workers,
+            persistent_workers=True,
             collate_fn=partial(
                 collate_fn,
                 text_pad_token_id=self.new_tokenizer.tokenizer.pad_token_id,  # type: ignore
