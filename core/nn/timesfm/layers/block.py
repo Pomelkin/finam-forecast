@@ -1,18 +1,3 @@
-# Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""Transformer layers for TimesFM."""
-
 import math
 from collections.abc import Callable
 
@@ -20,8 +5,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .. import configs
 from .normalization import RMSNorm
+from core.nn.timesfm import configs
 
 
 def make_attn_mask(
@@ -77,7 +62,7 @@ class RotaryPositionalEmbedding(nn.Module):
         self.embedding_dims = embedding_dims
         self.min_timescale = min_timescale
         self.max_timescale = max_timescale
-        self.register_buffer("max_seq_len", torch.tensor(0))
+        self.register_buffer("max_seq_len", torch.tensor(max_seq_len))
 
     def forward(
         self,
@@ -151,7 +136,7 @@ def _dot_product_attention(
 
 
 def _torch_dot_product_attention(
-    query, key, value, mask=None, scale: float | None = 1.0
+    query, key, value, mask=None, scale: torch.Tensor | float | None = 1.0
 ) -> torch.Tensor:
     """
     Performs the exact same (unscaled) attention as the above function,
@@ -292,7 +277,7 @@ class MultiHeadAttention(nn.Module):
             query = self.per_dim_scale(query)
 
         attn_mask = make_attn_mask(query_length=n_patches, num_all_masked_kv=num_masked)
-
+        attn_mask = attn_mask.to(query.device)
         x = self.attention_fn(
             query,
             key,
@@ -400,6 +385,7 @@ class MultiHeadCrossAttention(nn.Module):  # new block
             num_heads=self.num_heads,
             batch_size=batch_size,
         )
+        attn_mask = attn_mask.to(query.device)
 
         x = self.attention_fn(
             query,
