@@ -21,7 +21,6 @@ logger = setup_logger()
 class TimesFMDataModule(L.LightningDataModule):
     def __init__(
         self,
-        path: str | Path,
         data_cfg: DataConfig | dict,
         tokenizer: PreTrainedTokenizerFast,
     ) -> None:
@@ -29,20 +28,15 @@ class TimesFMDataModule(L.LightningDataModule):
         if isinstance(data_cfg, dict):
             data_cfg = DataConfig.model_validate(data_cfg)
 
-        if isinstance(path, str):
-            path = Path(path)
-
-        if not path.exists():
-            raise FileNotFoundError(f"Dataset path does not exist: {path}")
-
-        self.data_cfg = data_cfg
+        self.save_hyperparameters({"data_cfg": data_cfg.model_dump()})
 
         self.clearml_dataset = Dataset.get(
             data_cfg.dataset_id, alias="Training Dataset"
         )
-
         self.batch_size = data_cfg.batch_size
         self.num_workers = data_cfg.num_workers
+
+        self.data_cfg = data_cfg
 
         self.cache_path: None | Path = None
         self.train_dataset: TimesFMDataset | None = None

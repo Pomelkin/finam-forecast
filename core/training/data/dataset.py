@@ -122,6 +122,7 @@ def collate_fn(
     batch: list[dict[str, torch.Tensor]],
     text_pad_token_id: int,
     text_model_max_length: int,
+    text_sep_token_id: int,
 ) -> dict[str, torch.Tensor]:
     inputs_ts = torch.stack([item["inputs_ts"] for item in batch], dim=0)
     mask_ts = torch.stack([item["mask_ts"] for item in batch], dim=0)
@@ -133,7 +134,8 @@ def collate_fn(
     for t in texts:
         # оставляем правую часть длиной max_L
         if t.size(-1) > max_L:
-            t = t[..., -max_L:]
+            t = t[..., -(max_L - 1) :]
+            t = torch.cat([t.new_full((t.size(0), 1), text_sep_token_id), t], dim=-1)
         # добиваем слева PAD токенами до max_L
         elif t.size(-1) < max_L:
             pad_len = max_L - t.size(-1)
