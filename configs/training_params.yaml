@@ -7,7 +7,7 @@ trainer:
     reduce_dtype: float32
     buffer_dtype: bfloat16
   precision: "bf16-true"
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 4
   val_check_interval: 0.25
   devices: 2
 early_stopping:

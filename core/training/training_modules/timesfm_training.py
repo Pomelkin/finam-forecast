@@ -119,7 +119,6 @@ class NewsTimesFMTrainingModule(L.LightningModule):
                 raise ValueError("Process group is None, cannot scale learning rates.")
             scale_lrs_for_distributed(
                 self.hyperparams.lr,
-                inv_scale=True,
                 group=self.process_group,
             )
 

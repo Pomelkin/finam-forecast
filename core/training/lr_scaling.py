@@ -8,9 +8,9 @@ from core.utils import setup_logger
 
 def scale_lrs_for_distributed(
     lr_config: Lr,
-    inv_scale: bool = False,
     group: dist.ProcessGroup | None = None,
     config_name: str = "",
+    inv_scale: bool = False,
 ) -> None:
     logger = setup_logger("LR Dist Scaler")
 
