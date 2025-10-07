@@ -5,7 +5,7 @@ from .timesfm.layers import ResidualBlock
 from .timesfm.layers import Transformer
 
 
-FDSP_NO_SPLIT_MODULES = {
+FSDP_SHARD_MODULES = {
     Transformer,
     ResidualBlock,
     ModernBertEncoderLayer,
