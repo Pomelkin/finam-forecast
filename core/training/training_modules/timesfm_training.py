@@ -48,7 +48,9 @@ def metrics_factory() -> MetricCollection:
 
 
 class NewsTimesFMTrainingModule(L.LightningModule):
-    def __init__(self, hyperparams: Hyperparams | dict, task: Task) -> None:
+    def __init__(
+        self, hyperparams: Hyperparams | dict, path: str | Path, task: Task
+    ) -> None:
         super().__init__()
         if isinstance(hyperparams, dict):
             hyperparams = Hyperparams.model_validate(hyperparams)
@@ -61,6 +63,7 @@ class NewsTimesFMTrainingModule(L.LightningModule):
         self.validation_metrics = metrics_factory()
 
         self.hyperparams = hyperparams
+        self.path = path
         self.loss = nn.MSELoss(reduction="mean")
 
         self.model: NewsTimesFM_2p5_Model | None = None
@@ -103,7 +106,7 @@ class NewsTimesFMTrainingModule(L.LightningModule):
     def configure_model(self) -> None:
         if self.model is not None:
             return
-        self.model = NewsTimesFM_2p5_Model.from_hf(compile=False)
+        self.model = NewsTimesFM_2p5_Model.from_pretrained(self.path, compile=True)
         return
 
     @override
