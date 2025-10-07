@@ -15,19 +15,22 @@ class NewsTokenizerWrapper:
         tokenizer: PreTrainedTokenizerFast,
         max_length: int = 8192,
         truncation_side: Literal["left", "right"] = "left",
+        warn: bool = True,
     ) -> None:
         # tokenizer = AutoTokenizer.from_pretrained("deepvk/RuModernBERT-base", revision="patched-tokenizer", use_fast=True)
 
         if tokenizer.model_max_length != max_length:
-            logger.warning(
-                f"Tokenizer max length {tokenizer.model_max_length} is not equal to requested max_length {max_length}. Setting to {max_length}."
-            )
+            if warn:
+                logger.warning(
+                    f"Tokenizer max length {tokenizer.model_max_length} is not equal to requested max_length {max_length}. Setting to {max_length}."
+                )
             tokenizer.model_max_length = max_length
 
         if tokenizer.truncation_side != truncation_side:
-            logger.warning(
-                f"Tokenizer truncation side {tokenizer.truncation_side} is not {truncation_side}. Setting to {truncation_side}."
-            )
+            if warn:
+                logger.warning(
+                    f"Tokenizer truncation side {tokenizer.truncation_side} is not {truncation_side}. Setting to {truncation_side}."
+                )
             tokenizer.truncation_side = truncation_side
         special_token = "<NO_NEWS>"
         no_news_token_id = tokenizer.encode("<NO_NEWS>", add_special_tokens=False)

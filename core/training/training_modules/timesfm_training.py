@@ -106,7 +106,7 @@ class NewsTimesFMTrainingModule(L.LightningModule):
     def configure_model(self) -> None:
         if self.model is not None:
             return
-        self.model = NewsTimesFM_2p5_Model.from_pretrained(self.path)
+        self.model = NewsTimesFM_2p5_Model.from_pretrained(self.path, compile=True)
         return
 
     @override

@@ -1,3 +1,4 @@
+import multiprocessing as mp
 from functools import partial
 from pathlib import Path
 
@@ -6,7 +7,7 @@ from clearml import Dataset
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS
 from lightning.pytorch.utilities.types import TRAIN_DATALOADERS
 from torch.utils.data import DataLoader
-from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
+from transformers import AutoTokenizer
 
 from .cache import prepare_dataset_cache
 from .dataset import collate_fn
@@ -37,7 +38,7 @@ class TimesFMDataModule(L.LightningDataModule):
         self.data_cfg = data_cfg
 
         self.tokenizer_path = tokenizer_path
-        self.tokenizer = PreTrainedTokenizerFast.from_pretrained(tokenizer_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 
         self.cache_path: None | Path = None
         self.train_dataset: TimesFMDataset | None = None
@@ -74,8 +75,10 @@ class TimesFMDataModule(L.LightningDataModule):
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         if self.train_dataset is None:
             raise ValueError("Training dataset is not initialized.")
+        ctx = mp.get_context("spawn")
         return DataLoader(
             self.train_dataset,
+            multiprocessing_context=ctx,
             batch_size=self.batch_size,
             shuffle=True,
             pin_memory=True,
@@ -92,8 +95,10 @@ class TimesFMDataModule(L.LightningDataModule):
     def val_dataloader(self) -> EVAL_DATALOADERS:
         if self.val_dataset is None:
             raise ValueError("Validation dataset is not initialized.")
+        ctx = mp.get_context("spawn")
         return DataLoader(
             self.val_dataset,
+            multiprocessing_context=ctx,
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=True,

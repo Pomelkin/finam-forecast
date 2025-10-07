@@ -42,15 +42,18 @@ class TimesFMDataset(Dataset):
         df = pl.read_ipc(self.path, memory_map=True).sort("begin")
         return df
 
+    def _init_worker(self) -> None:
+        self.df = self._load_df()
+        tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
+        self.news_tokenizer = NewsTokenizerWrapper(tokenizer, warn=False)
+        return
+
     def __len__(self) -> int:
         return len(self.idx2ticker) * self.num_slices_per_ticker
 
     def __getitem__(self, index) -> dict[str, torch.Tensor]:
-        if self.df is None:
-            self.df = self._load_df()
-        if self.news_tokenizer is None:
-            tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
-            self.news_tokenizer = NewsTokenizerWrapper(tokenizer)
+        if (self.df is None) or (self.news_tokenizer is None):
+            self._init_worker()
 
         ticker_idx, _ = divmod(index, self.num_slices_per_ticker)
         ticker = self.idx2ticker[ticker_idx]
@@ -155,7 +158,7 @@ def collate_fn(
         texts_clamped,
         batch_first=True,
         padding_value=text_pad_token_id,
-    )[..., -text_model_max_length:]
+    )
     mask_text = (inputs_text != text_pad_token_id).long()
     return {
         "inputs_ts": inputs_ts,
