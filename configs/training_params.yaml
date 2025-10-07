@@ -9,7 +9,7 @@ trainer:
   precision: "bf16-true"
   accumulate_grad_batches: 1
   val_check_interval: 0.25
-  devices: 4
+  devices: 2
 early_stopping:
   monitor: "val_loss"
   patience: 8

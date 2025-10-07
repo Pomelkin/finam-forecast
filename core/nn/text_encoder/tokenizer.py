@@ -13,7 +13,7 @@ class NewsTokenizerWrapper:
     def __init__(
         self,
         tokenizer: PreTrainedTokenizerFast,
-        max_length: int = 8192,
+        max_length: int = 4096,
         truncation_side: Literal["left", "right"] = "left",
         warn: bool = True,
     ) -> None:
