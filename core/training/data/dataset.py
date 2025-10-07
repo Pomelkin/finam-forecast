@@ -54,6 +54,10 @@ class TimesFMDataset(Dataset):
     def __getitem__(self, index) -> dict[str, torch.Tensor]:
         if (self.df is None) or (self.news_tokenizer is None):
             self._init_worker()
+        if self.df is None:
+            raise ValueError("DataFrame is not initialized")
+        if self.news_tokenizer is None:
+            raise ValueError("NewsTokenizerWrapper is not initialized")
 
         ticker_idx, _ = divmod(index, self.num_slices_per_ticker)
         ticker = self.idx2ticker[ticker_idx]

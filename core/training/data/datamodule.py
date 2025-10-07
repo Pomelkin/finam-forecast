@@ -12,6 +12,7 @@ from transformers import AutoTokenizer
 from .cache import prepare_dataset_cache
 from .dataset import collate_fn
 from .dataset import TimesFMDataset
+from core.nn.text_encoder import NewsTokenizerWrapper
 from core.training.configs import DataConfig
 from core.utils import setup_logger
 
@@ -38,7 +39,9 @@ class TimesFMDataModule(L.LightningDataModule):
         self.data_cfg = data_cfg
 
         self.tokenizer_path = tokenizer_path
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        self.new_tokenizer = NewsTokenizerWrapper(
+            AutoTokenizer.from_pretrained(tokenizer_path), warn=False
+        )
 
         self.cache_path: None | Path = None
         self.train_dataset: TimesFMDataset | None = None
@@ -86,10 +89,10 @@ class TimesFMDataModule(L.LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=partial(
                 collate_fn,
-                text_pad_token_id=self.tokenizer.pad_token_id,  # type: ignore
-                text_model_max_length=self.tokenizer.model_max_length,
-                text_sep_token_id=self.tokenizer.sep_token_id,
-            ),  # type: ignore
+                text_pad_token_id=self.new_tokenizer.tokenizer.pad_token_id,  # type: ignore
+                text_model_max_length=self.new_tokenizer.tokenizer.model_max_length,
+                text_sep_token_id=self.new_tokenizer.tokenizer.sep_token_id,  # type: ignore
+            ),
         )
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
@@ -106,8 +109,8 @@ class TimesFMDataModule(L.LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=partial(
                 collate_fn,
-                text_pad_token_id=self.tokenizer.pad_token_id,  # type: ignore
-                text_model_max_length=self.tokenizer.model_max_length,
-                text_sep_token_id=self.tokenizer.sep_token_id,
-            ),  # type: ignore
+                text_pad_token_id=self.new_tokenizer.tokenizer.pad_token_id,  # type: ignore
+                text_model_max_length=self.new_tokenizer.tokenizer.model_max_length,
+                text_sep_token_id=self.new_tokenizer.tokenizer.sep_token_id,  # type: ignore
+            ),
         )

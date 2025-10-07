@@ -136,7 +136,7 @@ def _dot_product_attention(
 
 
 def _torch_dot_product_attention(
-    query, key, value, mask=None, scale: torch.Tensor | float | None = 1.0
+    query, key, value, mask=None, scale: float | None = 1.0
 ) -> torch.Tensor:
     """
     Performs the exact same (unscaled) attention as the above function,
