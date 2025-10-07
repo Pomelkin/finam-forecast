@@ -11,7 +11,6 @@ from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from .cache import prepare_dataset_cache
 from .dataset import collate_fn
 from .dataset import TimesFMDataset
-from core.nn.text_encoder import NewsTokenizerWrapper
 from core.training.configs import DataConfig
 from core.utils import setup_logger
 
@@ -22,12 +21,11 @@ class TimesFMDataModule(L.LightningDataModule):
     def __init__(
         self,
         data_cfg: DataConfig | dict,
-        tokenizer: PreTrainedTokenizerFast,
+        tokenizer_path: str | Path,
     ) -> None:
         super().__init__()
         if isinstance(data_cfg, dict):
             data_cfg = DataConfig.model_validate(data_cfg)
-
         self.save_hyperparameters({"data_cfg": data_cfg.model_dump()})
 
         self.clearml_dataset = Dataset.get(
@@ -38,10 +36,13 @@ class TimesFMDataModule(L.LightningDataModule):
 
         self.data_cfg = data_cfg
 
+        self.tokenizer_path = tokenizer_path
+        self.tokenizer = PreTrainedTokenizerFast.from_pretrained(tokenizer_path)
+
         self.cache_path: None | Path = None
         self.train_dataset: TimesFMDataset | None = None
         self.val_dataset: TimesFMDataset | None = None
-        self.news_tokenizer = NewsTokenizerWrapper(tokenizer)
+
         return
 
     def prepare_data(self) -> None:
@@ -49,7 +50,7 @@ class TimesFMDataModule(L.LightningDataModule):
         return
 
     def _dataset_factory(self, path: str | Path) -> TimesFMDataset:
-        return TimesFMDataset(path=path, news_tokenizer=self.news_tokenizer)
+        return TimesFMDataset(path=path, tokenizer_path=self.tokenizer_path)
 
     def setup(self, stage: str) -> None:
         if self.cache_path is None:
@@ -70,15 +71,6 @@ class TimesFMDataModule(L.LightningDataModule):
                 )
         return
 
-    @property
-    def dataset_tokenizer(self) -> PreTrainedTokenizerFast:
-        if self.train_dataset is not None:
-            return self.train_dataset.news_tokenizer.tokenizer
-        elif self.val_dataset is not None:
-            return self.val_dataset.news_tokenizer.tokenizer
-        else:
-            raise ValueError("Datasets are not initialized, cannot get tokenizer.")
-
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         if self.train_dataset is None:
             raise ValueError("Training dataset is not initialized.")
@@ -91,8 +83,9 @@ class TimesFMDataModule(L.LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=partial(
                 collate_fn,
-                text_pad_token_id=self.dataset_tokenizer.pad_token_id,  # type: ignore
-                text_model_max_length=self.dataset_tokenizer.model_max_length,
+                text_pad_token_id=self.tokenizer.pad_token_id,  # type: ignore
+                text_model_max_length=self.tokenizer.model_max_length,
+                text_sep_token_id=self.tokenizer.sep_token_id,
             ),  # type: ignore
         )
 
@@ -108,7 +101,8 @@ class TimesFMDataModule(L.LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=partial(
                 collate_fn,
-                text_pad_token_id=self.dataset_tokenizer.pad_token_id,  # type: ignore
-                text_model_max_length=self.dataset_tokenizer.model_max_length,
+                text_pad_token_id=self.tokenizer.pad_token_id,  # type: ignore
+                text_model_max_length=self.tokenizer.model_max_length,
+                text_sep_token_id=self.tokenizer.sep_token_id,
             ),  # type: ignore
         )

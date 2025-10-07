@@ -4,12 +4,13 @@ from pathlib import Path
 import polars as pl
 import torch
 from torch.utils.data import Dataset
+from transformers import AutoTokenizer
 
 from core.nn.text_encoder import NewsTokenizerWrapper
 
 
 class TimesFMDataset(Dataset):
-    def __init__(self, path: str | Path, news_tokenizer: NewsTokenizerWrapper) -> None:
+    def __init__(self, path: str | Path, tokenizer_path: str | Path) -> None:
         if isinstance(path, str):
             path = Path(path)
 
@@ -19,8 +20,9 @@ class TimesFMDataset(Dataset):
             raise ValueError(f"Expected an Arrow file, got {path.suffix}")
 
         self.df: pl.DataFrame | None = None
+        self.news_tokenizer: NewsTokenizerWrapper | None = None
         self.path = path
-        self.news_tokenizer = news_tokenizer
+        self.tokenizer_path = tokenizer_path
 
         self.output_patch_len = 128
         self.input_patch_len = 32
@@ -46,6 +48,10 @@ class TimesFMDataset(Dataset):
     def __getitem__(self, index) -> dict[str, torch.Tensor]:
         if self.df is None:
             self.df = self._load_df()
+        if self.news_tokenizer is None:
+            tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
+            self.news_tokenizer = NewsTokenizerWrapper(tokenizer)
+
         ticker_idx, _ = divmod(index, self.num_slices_per_ticker)
         ticker = self.idx2ticker[ticker_idx]
         slice_len = self.slice_len

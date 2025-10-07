@@ -16,7 +16,6 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.strategies import FSDPStrategy
 from torch.distributed.fsdp import MixedPrecision
-from transformers import AutoTokenizer
 
 from core.nn import FSDP_SHARD_MODULES
 from core.training.callbacks.checkpoint import setup_checkpoint_callback
@@ -241,11 +240,9 @@ def train_timesfm(
 
     tokenizer_input_model = InputModel(model_id=training_params.tokenizer_id)
     tokenizer_input_model.connect(task, ignore_remote_overrides=True)
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_input_model.get_local_copy())
-
     data_module = TimesFMDataModule(
         data_cfg=data_cfg,
-        tokenizer=tokenizer,
+        tokenizer_path=tokenizer_input_model.get_local_copy(),
     )
 
     clearml_input_model = InputModel(model_id=training_params.model_id)
