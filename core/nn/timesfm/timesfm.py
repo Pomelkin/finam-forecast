@@ -1,18 +1,3 @@
-# Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""TimesFM models."""
-
 from pathlib import Path
 
 import orjson
@@ -198,6 +183,9 @@ class NewsTimesFM_2p5_Model(nn.Module):
         )
         return output_ts
 
+    def compile_(self) -> "NewsTimesFM_2p5_Model":
+        return torch.compile(self, mode="reduce-overhead", dynamic=True)  # type: ignore
+
     @classmethod
     def from_hf(
         cls,
@@ -254,7 +242,7 @@ class NewsTimesFM_2p5_Model(nn.Module):
         log_incompatible_keys(incompatible_keys, model_specific_msg="for TextEncoder")
 
         if compile:
-            cls = torch.compile(cls, mode="reduce-overhead")
+            cls = cls.compile_()
         return cls  # type: ignore
 
     @classmethod
@@ -298,7 +286,7 @@ class NewsTimesFM_2p5_Model(nn.Module):
         incompatible_keys = cls.load_state_dict(state_dict, strict=False)
         log_incompatible_keys(incompatible_keys)
         if compile:
-            cls = torch.compile(cls, mode="reduce-overhead")
+            cls = cls.compile_()
         return cls  # type: ignore
 
     @classmethod
@@ -320,7 +308,7 @@ class NewsTimesFM_2p5_Model(nn.Module):
             dtype=dtype, device=device
         )
         if compile:
-            cls = torch.compile(cls, mode="reduce-overhead")
+            cls = cls.compile_()
         return cls  # type: ignore
 
     @classmethod
