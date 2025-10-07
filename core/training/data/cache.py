@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 
 from core.utils import setup_logger
 
-logger = setup_logger(__file__)
+logger = setup_logger()
 
 COMMANDS = Literal["RECREATE", "CREATE", "OK"]
 

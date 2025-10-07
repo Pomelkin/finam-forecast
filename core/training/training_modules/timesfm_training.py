@@ -106,7 +106,7 @@ class NewsTimesFMTrainingModule(L.LightningModule):
     def configure_model(self) -> None:
         if self.model is not None:
             return
-        self.model = NewsTimesFM_2p5_Model.from_pretrained(self.path, compile=True)
+        self.model = NewsTimesFM_2p5_Model.from_pretrained(self.path)
         return
 
     @override
@@ -386,26 +386,29 @@ class NewsTimesFMTrainingModule(L.LightningModule):
         return outputs["loss"]
 
     def on_validation_epoch_end(self) -> None:
-        if is_main_process():
-            val_output = self.val_outputs[random.randint(0, len(self.val_outputs) - 1)]
-            predictions = val_output["predictions"]
-            targets = val_output["targets"]
+        if len(self.val_outputs) > 0:
+            if is_main_process():
+                val_output = self.val_outputs[
+                    random.randint(0, len(self.val_outputs) - 1)
+                ]
+                predictions = val_output["predictions"]
+                targets = val_output["targets"]
 
-            batch_idx = random.randint(0, predictions.size(0) - 1)
+                batch_idx = random.randint(0, predictions.size(0) - 1)
 
-            last_preds = predictions[batch_idx].view(-1).float().numpy()
-            last_targets = targets[batch_idx].view(-1).float().numpy()
+                last_preds = predictions[batch_idx].view(-1).float().numpy()
+                last_targets = targets[batch_idx].view(-1).float().numpy()
 
-            fig = px.line()
-            fig.add_scatter(y=last_preds, mode="lines+markers", name="Prediction")
-            fig.add_scatter(y=last_targets, mode="lines+markers", name="Target")
+                fig = px.line()
+                fig.add_scatter(y=last_preds, mode="lines+markers", name="Prediction")
+                fig.add_scatter(y=last_targets, mode="lines+markers", name="Target")
 
-            self.task.get_logger().report_plotly(
-                title="Sample Prediction vs Target",
-                series="val",
-                iteration=self.current_epoch,
-                figure=fig,
-            )
+                self.task.get_logger().report_plotly(
+                    title="Sample Prediction vs Target",
+                    series="val",
+                    iteration=self.current_epoch,
+                    figure=fig,
+                )
 
         if dist.is_initialized():
             dist.barrier()
