@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "case-converter>=1.2.0",
+    "click>=8.3.0",
     "lightning>=2.5.5",
     "loguru>=0.7.3",
     "orjson>=3.11.3",
