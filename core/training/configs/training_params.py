@@ -69,7 +69,8 @@ class DataConfig(BaseModel):
 
 
 class TrainingParams(ConfigMixin):
+    model_id: str
+    tokenizer_id: str
     trainer: TrainerParameters
     early_stopping: EarlyStoppingConfig | None = None
     checkpoint: CheckpointConfig
-    data: DataConfig
