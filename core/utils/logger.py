@@ -30,7 +30,7 @@ except Exception:
     dist = _Dummy()
 
 _DEFAULT_SINK_REMOVED = False
-_DEFAULT_FMT = "<level>{level: <8}</level> {time:HH:mm:ss.SSS} <level>{level: <8}</level> {time:HH:mm:ss.SSS}"
+_DEFAULT_FMT = "<level>{level: <8}</level> {time:HH:mm:ss.SSS} [{extra[channel]}] <level>{message}</level>"
 _ONLY_MESSAGE_FMT = "<level>{message}</level>"
 _PRESETS = {"default": _DEFAULT_FMT, "only_message": _ONLY_MESSAGE_FMT}
 
