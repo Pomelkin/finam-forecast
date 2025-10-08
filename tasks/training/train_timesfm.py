@@ -232,7 +232,7 @@ def train_timesfm(
         gradient_clip_val=None,
         val_check_interval=training_params.trainer.val_check_interval,
         callbacks=callbacks,
-        log_every_n_steps=(50 // training_params.trainer.accumulate_grad_batches),
+        log_every_n_steps=5,
         logger=loggers,
         fast_dev_run=fast_dev_run_,
         profiler=profiler,
