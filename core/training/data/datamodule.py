@@ -7,7 +7,6 @@ from clearml import Dataset
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS
 from lightning.pytorch.utilities.types import TRAIN_DATALOADERS
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
 
 from .cache import prepare_dataset_cache
 from .dataset import collate_fn
@@ -38,15 +37,11 @@ class TimesFMDataModule(L.LightningDataModule):
 
         self.data_cfg = data_cfg
 
-        self.tokenizer_path = tokenizer_path
-        self.new_tokenizer = NewsTokenizerWrapper(
-            AutoTokenizer.from_pretrained(tokenizer_path), warn=False
-        )
+        self.new_tokenizer = NewsTokenizerWrapper(tokenizer_path, warn=False)
 
         self.cache_path: None | Path = None
         self.train_dataset: TimesFMDataset | None = None
         self.val_dataset: TimesFMDataset | None = None
-
         return
 
     def prepare_data(self) -> None:
@@ -54,7 +49,7 @@ class TimesFMDataModule(L.LightningDataModule):
         return
 
     def _dataset_factory(self, path: str | Path) -> TimesFMDataset:
-        return TimesFMDataset(path=path, tokenizer_path=self.tokenizer_path)
+        return TimesFMDataset(path=path, news_tokenizer=self.new_tokenizer)
 
     def setup(self, stage: str) -> None:
         if self.cache_path is None:
@@ -90,9 +85,9 @@ class TimesFMDataModule(L.LightningDataModule):
             persistent_workers=True,
             collate_fn=partial(
                 collate_fn,
-                text_pad_token_id=self.new_tokenizer.tokenizer.pad_token_id,  # type: ignore
-                text_model_max_length=self.new_tokenizer.tokenizer.model_max_length,
-                text_sep_token_id=self.new_tokenizer.tokenizer.sep_token_id,  # type: ignore
+                text_pad_token_id=self.new_tokenizer.pad_token_id,
+                text_model_max_length=self.new_tokenizer.model_max_length,
+                text_sep_token_id=self.new_tokenizer.sep_token_id,
             ),
         )
 
@@ -111,8 +106,8 @@ class TimesFMDataModule(L.LightningDataModule):
             persistent_workers=True,
             collate_fn=partial(
                 collate_fn,
-                text_pad_token_id=self.new_tokenizer.tokenizer.pad_token_id,  # type: ignore
-                text_model_max_length=self.new_tokenizer.tokenizer.model_max_length,
-                text_sep_token_id=self.new_tokenizer.tokenizer.sep_token_id,  # type: ignore
+                text_pad_token_id=self.new_tokenizer.pad_token_id,
+                text_model_max_length=self.new_tokenizer.model_max_length,
+                text_sep_token_id=self.new_tokenizer.sep_token_id,
             ),
         )

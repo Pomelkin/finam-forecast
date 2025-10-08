@@ -1,6 +1,8 @@
+from pathlib import Path
 from typing import Literal
 
 import torch
+from transformers import AutoTokenizer
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 
 from core.utils import setup_logger
@@ -12,41 +14,61 @@ logger = setup_logger(fmt="only_message")
 class NewsTokenizerWrapper:
     def __init__(
         self,
-        tokenizer: PreTrainedTokenizerFast,
-        max_length: int = 4096,
+        tokenizer_path: str | Path,
+        model_max_length: int = 4096,
         truncation_side: Literal["left", "right"] = "left",
         warn: bool = True,
     ) -> None:
-        # tokenizer = AutoTokenizer.from_pretrained("deepvk/RuModernBERT-base", revision="patched-tokenizer", use_fast=True)
+        self.model_max_length = model_max_length
+        self.truncation_side = truncation_side
+        self.warn = warn
+        self.tokenizer_path = tokenizer_path
 
-        if tokenizer.model_max_length != max_length:
-            if warn:
-                logger.warning(
-                    f"Tokenizer max length {tokenizer.model_max_length} is not equal to requested max_length {max_length}. Setting to {max_length}."
-                )
-            tokenizer.model_max_length = max_length
+        tokenizer = self._lazy_init_tokenizer()
+        self.no_news_token = "<NO_NEWS>"
+        self.no_news_token_id = self._get_special_token_id(
+            tokenizer, self.no_news_token
+        )
+        self.cls_token_id = int(tokenizer.cls_token_id)  # type: ignore
+        self.sep_token_id = int(tokenizer.sep_token_id)  # type: ignore
+        self.pad_token_id = int(tokenizer.pad_token_id)  # type: ignore
+        self.tokenizer: PreTrainedTokenizerFast | None = None
+        return
 
-        if tokenizer.truncation_side != truncation_side:
-            if warn:
-                logger.warning(
-                    f"Tokenizer truncation side {tokenizer.truncation_side} is not {truncation_side}. Setting to {truncation_side}."
-                )
-            tokenizer.truncation_side = truncation_side
-        special_token = "<NO_NEWS>"
-        no_news_token_id = tokenizer.encode("<NO_NEWS>", add_special_tokens=False)
-        if len(no_news_token_id) > 1:
+    def _get_special_token_id(
+        self, tokenizer: PreTrainedTokenizerFast, special_token: str
+    ) -> int:
+        token_id = tokenizer.encode(special_token, add_special_tokens=False)
+        if len(token_id) > 1:
             raise ValueError(
                 f"{special_token} is not a special token for this tokenizer. "
                 "Add it to the tokenizer and align the model embeddings size."
             )
-        self.tokenizer = tokenizer
-        self.no_news_token = special_token
-        self.no_news_token_id = no_news_token_id[0]
-        return
+        return token_id[0]
+
+    def _lazy_init_tokenizer(self) -> PreTrainedTokenizerFast:
+        tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path, use_fast=True)
+        if tokenizer.model_max_length != self.model_max_length:
+            if self.warn:
+                logger.warning(
+                    f"Tokenizer max length {tokenizer.model_max_length} is not equal to requested max_length {self.model_max_length}. Setting to {self.model_max_length}."
+                )
+            tokenizer.model_max_length = self.model_max_length
+
+        if tokenizer.truncation_side != self.truncation_side:
+            if self.warn:
+                logger.warning(
+                    f"Tokenizer truncation side {tokenizer.truncation_side} is not {self.truncation_side}. Setting to {self.truncation_side}."
+                )
+            tokenizer.truncation_side = self.truncation_side
+        return tokenizer
 
     def tokenize_news(
         self, news: list[str | None], return_tensors: Literal["pt"] | None = None
     ) -> dict[str, list | torch.Tensor]:
+        if self.tokenizer is None:
+            self.tokenizer = self._lazy_init_tokenizer()
+
         token_ids: list[int] = []
         for publication in news:
             if publication is None:
@@ -85,12 +107,10 @@ class NewsTokenizerWrapper:
                 formatted_inputs_ids.append(self.no_news_token_id)
             else:
                 formatted_inputs_ids.extend(doc_tokens[0])
-            formatted_inputs_ids.append(int(self.tokenizer.sep_token_id))  # type: ignore
+            formatted_inputs_ids.append(self.sep_token_id)  # type: ignore
 
-        if len(formatted_inputs_ids) > (self.tokenizer.model_max_length - 1):
-            formatted_inputs_ids = formatted_inputs_ids[
-                -(self.tokenizer.model_max_length - 1) :
-            ]
+        if len(formatted_inputs_ids) > (self.model_max_length - 1):
+            formatted_inputs_ids = formatted_inputs_ids[-(self.model_max_length - 1) :]
         return torch.tensor(
-            [self.tokenizer.cls_token_id] + formatted_inputs_ids, dtype=torch.long
+            [self.cls_token_id] + formatted_inputs_ids, dtype=torch.long
         )

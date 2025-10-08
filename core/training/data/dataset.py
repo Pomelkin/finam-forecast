@@ -4,13 +4,12 @@ from pathlib import Path
 import polars as pl
 import torch
 from torch.utils.data import Dataset
-from transformers import AutoTokenizer
 
 from core.nn.text_encoder import NewsTokenizerWrapper
 
 
 class TimesFMDataset(Dataset):
-    def __init__(self, path: str | Path, tokenizer_path: str | Path) -> None:
+    def __init__(self, path: str | Path, news_tokenizer: NewsTokenizerWrapper) -> None:
         if isinstance(path, str):
             path = Path(path)
 
@@ -20,9 +19,8 @@ class TimesFMDataset(Dataset):
             raise ValueError(f"Expected an Arrow file, got {path.suffix}")
 
         self.df: pl.DataFrame | None = None
-        self.news_tokenizer: NewsTokenizerWrapper | None = None
+        self.news_tokenizer = news_tokenizer
         self.path = path
-        self.tokenizer_path = tokenizer_path
 
         self.output_patch_len = 128
         self.input_patch_len = 32
@@ -42,22 +40,12 @@ class TimesFMDataset(Dataset):
         df = pl.read_ipc(self.path, memory_map=True).sort("begin")
         return df
 
-    def _init_worker(self) -> None:
-        self.df = self._load_df()
-        tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
-        self.news_tokenizer = NewsTokenizerWrapper(tokenizer, warn=False)
-        return
-
     def __len__(self) -> int:
         return len(self.idx2ticker) * self.num_slices_per_ticker
 
     def __getitem__(self, index) -> dict[str, torch.Tensor]:
-        if (self.df is None) or (self.news_tokenizer is None):
-            self._init_worker()
         if self.df is None:
-            raise ValueError("DataFrame is not initialized")
-        if self.news_tokenizer is None:
-            raise ValueError("NewsTokenizerWrapper is not initialized")
+            self.df = self._load_df()
 
         ticker_idx, _ = divmod(index, self.num_slices_per_ticker)
         ticker = self.idx2ticker[ticker_idx]
@@ -100,7 +88,11 @@ class TimesFMDataset(Dataset):
                 ],
                 dim=0,
             )
-        patch_count = len(inputs_ts) // self.input_patch_len
+
+        inputs_ts = inputs_ts.reshape(-1, self.input_patch_len)
+        mask_ts = mask_ts.reshape(-1, self.input_patch_len)
+
+        patch_count = inputs_ts.shape[0]
         targets = torch.zeros(
             patch_count, self.output_patch_len, device=inputs_ts.device
         )
@@ -121,7 +113,7 @@ class TimesFMDataset(Dataset):
         texts_per_tokens_t = torch.nn.utils.rnn.pad_sequence(
             texts_per_tokens,
             batch_first=True,
-            padding_value=self.news_tokenizer.tokenizer.pad_token_id,  # type: ignore
+            padding_value=self.news_tokenizer.pad_token_id,  # type: ignore
         )
         return {
             "inputs_ts": inputs_ts,
