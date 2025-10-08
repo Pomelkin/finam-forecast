@@ -112,17 +112,21 @@ class NewsTimesFM_2p5_Model(nn.Module):
 
     def forecast(
         self,
-        inputs_ts: torch.Tensor,
-        mask_ts: torch.Tensor,
-        inputs_text: torch.Tensor,
-        mask_text: torch.Tensor,
-    ) -> torch.Tensor:
+        inputs_ts: torch.Tensor,  # (B, patch_len, context_len)
+        mask_ts: torch.Tensor,  # (B, patch_len, context_len)
+        inputs_text: torch.Tensor,  # (B, patch_len, T)
+        mask_text: torch.Tensor,  # (B, patch_len, T
+        targets: torch.Tensor | None = None,  # (B, patch_len, output_patch_len)
+    ) -> dict[str, torch.Tensor]:
         B, patch_len, T = inputs_text.shape
+
         flattened_inputs_text = inputs_text.reshape(-1, T)
         flattened_mask_text = mask_text.reshape(-1, T)
+
         text_embeddings = self.text_encoder(
             input_ids=flattened_inputs_text, attention_mask=flattened_mask_text
         ).last_hidden_state
+
         text_embeddings = text_embeddings.reshape(
             B, patch_len, T, -1
         )  # (B, patch_len, T, hidden)
@@ -138,50 +142,31 @@ class NewsTimesFM_2p5_Model(nn.Module):
             mean_pooled
         )  # (B, patch_len, model_dims)
 
-        batch_size, context_len = inputs_ts.shape[0], inputs_ts.shape[1]
-        if (pad_len := -(context_len) % self.input_patch_len) != 0:
-            inputs_ts = torch.cat(
-                [
-                    torch.zeros(
-                        batch_size,
-                        pad_len,
-                        device=inputs_ts.device,
-                    ),
-                    inputs_ts,
-                ],
-                dim=1,
-            )
-            mask_ts = torch.cat(
-                [
-                    torch.ones(
-                        batch_size,
-                        pad_len,
-                        device=mask_ts.device,
-                        dtype=torch.bool,
-                    ),
-                    mask_ts,
-                ],
-                dim=1,
-            )
-            context_len += pad_len
-
-        if context_len > self.config.context_limit:
-            inputs_ts = inputs_ts[:, -self.config.context_limit :]
-            mask_ts = mask_ts[:, -self.config.context_limit :]
-
-        inputs_ts = torch.reshape(inputs_ts, (batch_size, -1, self.input_patch_len))
-        mask_ts = torch.reshape(mask_ts, (batch_size, -1, self.input_patch_len))
-
         causal_means, causal_scale = compute_causal_statistics(inputs_ts, mask_ts)
         normalized_inputs = revin(inputs_ts, causal_means, causal_scale, reverse=False)
+
         normalized_output_ts = self(normalized_inputs, mask_ts, text_embeddings)
         normalized_output_ts = normalized_output_ts[..., self.pred_quantile_index]
+
         last_causal_mean = causal_means[..., -1].unsqueeze(-1)
         last_causal_scale = causal_scale[..., -1].unsqueeze(-1)
+
         output_ts = revin(
             normalized_output_ts, last_causal_mean, last_causal_scale, reverse=True
         )
-        return output_ts
+
+        outputs = {
+            "normalized_output": normalized_output_ts,
+            "output": output_ts,
+        }
+
+        if targets is not None:
+            normalized_targets = revin(
+                targets, last_causal_mean, last_causal_scale, reverse=False
+            )
+            outputs["normalized_target"] = normalized_targets
+            outputs["target"] = targets
+        return outputs
 
     def compile_(self) -> "NewsTimesFM_2p5_Model":
         return torch.compile(self, mode="reduce-overhead", dynamic=True)  # type: ignore

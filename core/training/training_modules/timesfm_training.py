@@ -270,8 +270,7 @@ class NewsTimesFMTrainingModule(L.LightningModule):
     def forward(
         self,
         batch: dict[str, torch.Tensor],
-        calculate_loss_per_forecast_step: bool = False,
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         if self.model is None:
             raise ValueError("Model must be configured before forward pass.")
 
@@ -280,38 +279,31 @@ class NewsTimesFMTrainingModule(L.LightningModule):
             mask_ts=batch["mask_ts"],
             inputs_text=batch["inputs_text"],
             mask_text=batch["mask_text"],
+            targets=batch["targets"],
         )
 
         outputs = {}
-        if calculate_loss_per_forecast_step:
-            total_loss = 0.0
-            for i in range(predictions.shape[-1]):
-                step_loss = self.loss(
-                    predictions[..., i],
-                    batch["targets"][..., i].to(predictions.dtype),
-                )
-                outputs[f"for_step_loss_{i}"] = step_loss
-                total_loss += step_loss
-            total_loss /= predictions.shape[-1]
-        else:
-            total_loss = self.loss(
-                predictions,
-                batch["targets"].to(predictions.dtype),
-            )
+        total_loss = self.loss(
+            predictions["normalized_output"],
+            predictions["normalized_target"],
+        )
         outputs["loss"] = total_loss
-        outputs["predictions"] = predictions
-        outputs["targets"] = batch["targets"]
-        return outputs
+        return total_loss, predictions
+
+    def __call__(
+        self, batch: dict[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        return super().__call__(batch)
 
     def training_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        outputs: dict[str, torch.Tensor] = self(batch)
+        loss, prediction = self(batch)
 
         metrics: dict[str, torch.Tensor] = self.training_metrics(
-            outputs["predictions"], outputs["targets"]
+            prediction["output"], prediction["target"]
         )
-        metrics.update({"loss": outputs["loss"].detach()})
+        metrics.update({"loss": loss.detach()})
 
         self.log_scheduled_values()
         self.log_dict(
@@ -332,7 +324,7 @@ class NewsTimesFMTrainingModule(L.LightningModule):
             logger=False,
             sync_dist=True,
         )
-        return outputs["loss"]
+        return loss
 
     def log_scheduled_values(self) -> None:
         scheduler: CosineScheduler | CompositeScheduler = self.lr_schedulers()  # type: ignore
@@ -351,12 +343,12 @@ class NewsTimesFMTrainingModule(L.LightningModule):
     def validation_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        outputs: dict[str, torch.Tensor] = self(batch)
+        loss, prediction = self(batch)
 
         metrics: dict[str, torch.Tensor] = self.validation_metrics(
-            outputs["predictions"], outputs["targets"]
+            prediction["output"], prediction["target"]
         )
-        metrics.update({"loss": outputs["loss"].detach()})
+        metrics.update({"loss": loss.detach()})
 
         self.log_dict(
             metrics,
@@ -378,11 +370,11 @@ class NewsTimesFMTrainingModule(L.LightningModule):
         )
 
         data_to_save = {
-            "predictions": outputs["predictions"][:, -2:].clone().detach().cpu(),
-            "targets": outputs["targets"][:, -2:].clone().detach().cpu(),
+            "predictions": prediction["output"][:, -2:].clone().detach().cpu(),
+            "targets": prediction["target"][:, -2:].clone().detach().cpu(),
         }
         self.val_outputs.append(data_to_save)
-        return outputs["loss"]
+        return loss
 
     def on_validation_epoch_end(self) -> None:
         if len(self.val_outputs) > 0 and is_main_process():
