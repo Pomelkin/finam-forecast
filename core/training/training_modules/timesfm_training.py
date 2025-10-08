@@ -290,11 +290,6 @@ class NewsTimesFMTrainingModule(L.LightningModule):
         outputs["loss"] = total_loss
         return total_loss, predictions
 
-    def __call__(
-        self, batch: dict[str, torch.Tensor]
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        return super().__call__(batch)
-
     def training_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
