@@ -25,26 +25,12 @@ class NewsTokenizerWrapper:
         self.tokenizer_path = tokenizer_path
 
         tokenizer = self._lazy_init_tokenizer()
-        self.no_news_token = "<NO_NEWS>"
-        self.no_news_token_id = self._get_special_token_id(
-            tokenizer, self.no_news_token
-        )
+
         self.cls_token_id = int(tokenizer.cls_token_id)  # type: ignore
         self.sep_token_id = int(tokenizer.sep_token_id)  # type: ignore
         self.pad_token_id = int(tokenizer.pad_token_id)  # type: ignore
         self.tokenizer: PreTrainedTokenizerFast | None = None
         return
-
-    def _get_special_token_id(
-        self, tokenizer: PreTrainedTokenizerFast, special_token: str
-    ) -> int:
-        token_id = tokenizer.encode(special_token, add_special_tokens=False)
-        if len(token_id) > 1:
-            raise ValueError(
-                f"{special_token} is not a special token for this tokenizer. "
-                "Add it to the tokenizer and align the model embeddings size."
-            )
-        return token_id[0]
 
     def _lazy_init_tokenizer(self) -> PreTrainedTokenizerFast:
         tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path, use_fast=True)
@@ -71,16 +57,14 @@ class NewsTokenizerWrapper:
 
         token_ids: list[int] = []
         for publication in news:
-            if publication is None:
-                token_ids.append(self.no_news_token_id)
-            else:
+            if publication is not None:
                 # кодируем БЕЗ добавления спецтокенов (вставим sep самостоятельно)
                 # используем add_special_tokens=False и берем только input_ids
                 enc = self.tokenizer.encode(
                     publication, add_special_tokens=False, truncation=False
                 )
                 token_ids.extend(enc)
-            token_ids.append(int(self.tokenizer.sep_token_id))  # type: ignore
+                token_ids.append(int(self.tokenizer.sep_token_id))  # type: ignore
 
         # обрезаем при необходимости (оставляем хвост контролируемой длины)
         max_body = max(0, int(self.tokenizer.model_max_length) - 1)
@@ -103,11 +87,9 @@ class NewsTokenizerWrapper:
         formatted_inputs_ids: list[int] = []
 
         for doc_tokens in input_ids:
-            if doc_tokens is None:
-                formatted_inputs_ids.append(self.no_news_token_id)
-            else:
+            if doc_tokens is not None:
                 formatted_inputs_ids.extend(doc_tokens[0])
-            formatted_inputs_ids.append(self.sep_token_id)  # type: ignore
+                formatted_inputs_ids.append(self.sep_token_id)  # type: ignore
 
         if len(formatted_inputs_ids) > (self.model_max_length - 1):
             formatted_inputs_ids = formatted_inputs_ids[-(self.model_max_length - 1) :]
