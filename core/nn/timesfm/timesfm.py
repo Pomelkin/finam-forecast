@@ -170,19 +170,21 @@ class NewsTimesFM_2p5_Model(nn.Module):
         normalized_output_ts = self(normalized_inputs, mask_ts, text_embeddings)
         normalized_output_ts = normalized_output_ts[..., self.pred_quantile_index]
 
-        output_ts = revin(normalized_output_ts, mu_context, sigma_context, reverse=True)
+        outputs_ts = revin(
+            normalized_output_ts, mu_context, sigma_context, reverse=True
+        )
 
         outputs = {
-            "normalized_output": normalized_output_ts,
-            "output": output_ts,
+            "normalized_outputs": normalized_output_ts,
+            "outputs": outputs_ts,
         }
 
         if targets is not None:
             normalized_targets = revin(
                 targets, mu_context, sigma_context, reverse=False
             )
-            outputs["normalized_target"] = normalized_targets
-            outputs["target"] = targets
+            outputs["normalized_targets"] = normalized_targets
+            outputs["targets"] = targets
         return outputs
 
     def compile_(self) -> "NewsTimesFM_2p5_Model":
