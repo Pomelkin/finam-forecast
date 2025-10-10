@@ -48,13 +48,27 @@ def ce_attention_mask(
     return causal_mask
 
 
+class LayerScale(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        init_value: float = 1e-5,
+        inplace: bool = False,
+    ) -> None:
+        super().__init__()
+        self.inplace = inplace
+        self.gamma = nn.Parameter(torch.full((dim,), init_value))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.mul_(self.gamma) if self.inplace else x * self.gamma
+
+
 class RotaryPositionalEmbedding(nn.Module):
     """Rotary positional embedding."""
 
     def __init__(
         self,
         embedding_dims: int,
-        max_seq_len: int,
         min_timescale: float = 1.0,
         max_timescale: float = 10000.0,
     ):
@@ -62,7 +76,6 @@ class RotaryPositionalEmbedding(nn.Module):
         self.embedding_dims = embedding_dims
         self.min_timescale = min_timescale
         self.max_timescale = max_timescale
-        self.register_buffer("max_seq_len", torch.tensor(max_seq_len))
 
     def forward(
         self,
@@ -88,12 +101,6 @@ class RotaryPositionalEmbedding(nn.Module):
         ).to(inputs.device)
         if position is None:
             seq_length = inputs.shape[1]
-            if seq_length > self.max_seq_len:
-                if self.training:
-                    self.max_seq_len = torch.tensor(seq_length)
-                else:
-                    scale = torch.tensor(seq_length) / self.max_seq_len
-                    timescale = timescale * (1 / scale)
             position = torch.arange(
                 seq_length, dtype=torch.float32, device=inputs.device
             )[None, :]
@@ -226,7 +233,6 @@ class MultiHeadAttention(nn.Module):
         self.use_rotary_position_embeddings = use_rotary_position_embeddings
         if self.use_rotary_position_embeddings:
             self.rotary_position_embedding = RotaryPositionalEmbedding(
-                max_seq_len=10,
                 embedding_dims=self.head_dim,
             )
 
@@ -325,12 +331,7 @@ class MultiHeadCrossAttention(nn.Module):  # new block
 
         self.use_rotary_position_embeddings = use_rotary_position_embeddings
         if self.use_rotary_position_embeddings:
-            self.ts_rotary_position_embedding = RotaryPositionalEmbedding(
-                max_seq_len=10,
-                embedding_dims=self.head_dim,
-            )
-            self.text_rotary_position_embedding = RotaryPositionalEmbedding(
-                max_seq_len=10,
+            self.rotary_position_embedding = RotaryPositionalEmbedding(
                 embedding_dims=self.head_dim,
             )
         self._init_weights()
@@ -372,8 +373,8 @@ class MultiHeadCrossAttention(nn.Module):  # new block
             positions_text = torch.arange(n_tokens_text, device=inputs_text.device)[
                 None, :
             ]
-            query = self.ts_rotary_position_embedding(query, position_ts)
-            key = self.text_rotary_position_embedding(key, positions_text)
+            query = self.rotary_position_embedding(query, position_ts)
+            key = self.rotary_position_embedding(key, positions_text)
 
         query = self.query_ln(query)
         key = self.key_ln(key)
@@ -462,12 +463,13 @@ class Transformer(nn.Module):
             self.activation = nn.Identity()
         else:
             raise ValueError(f"Activation: {config.ff_activation} not supported.")
+        return
 
     def forward(
         self,
         input_embeddings_ts: torch.Tensor,
         patch_mask_ts: torch.Tensor,
-        input_embedding_text: torch.Tensor,
+        input_embedding_text: torch.Tensor | None = None,
     ) -> torch.Tensor:
         attn_output = self.attn(
             inputs_q=self.pre_attn_ln(input_embeddings_ts),
@@ -475,15 +477,16 @@ class Transformer(nn.Module):
         )
         attn_output = self.post_attn_ln(attn_output) + input_embeddings_ts
 
-        attn_output_skip = attn_output
+        if input_embedding_text is not None:
+            attn_output_skip = attn_output
 
-        attn_output = self.cross_attn(
-            inputs_ts=self.pre_crossattn_ln_ts(attn_output),
-            patch_mask=patch_mask_ts,
-            inputs_text=self.pre_crossattn_ln_text(input_embedding_text),
-        )
+            attn_output = self.cross_attn(
+                inputs_ts=self.pre_crossattn_ln_ts(attn_output),
+                patch_mask=patch_mask_ts,
+                inputs_text=self.pre_crossattn_ln_text(input_embedding_text),
+            )
 
-        attn_output = self.post_crossattn_ln(attn_output) + attn_output_skip
+            attn_output = self.post_crossattn_ln(attn_output) + attn_output_skip
 
         output_embeddings = (
             self.post_ff_ln(

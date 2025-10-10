@@ -1,66 +1,62 @@
-# Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""Abstract configs for TimesFM layers."""
-
-import dataclasses
+from pathlib import Path
 from typing import Literal
+from typing import TypeVar
+
+import orjson
+from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ConfigDict
+from transformers.models.modernbert import ModernBertConfig as HFModernBertConfig
+
+TClass = TypeVar("TClass", bound="ConfigMixin")
 
 
-@dataclasses.dataclass(frozen=False)
-class ForecastConfig:
-    """Options for forecasting.
+class ConfigMixin(PydanticBaseModel):
+    @classmethod
+    def from_json(cls: type[TClass], path: str | Path) -> TClass:
+        """Initialize config from a JSON file."""
 
-    Attributes:
-      max_context: The maximum context length. This is used by the complied decode
-        function at inference time during batched inference. Any input time series
-        with length less than max_context will be padded with zeros, and with
-        length greater than max_context will be truncated.
-      max_horizon: The maximum horizon length. This is used by the complied decode
-        function at inference time during batched inference. The compiled cached
-        decoding function will by default forecast till max_horizon.
-      normalize_inputs: Whether to normalize the inputs. This is useful when the
-        raw inputs are of extremely large or small magnitudes which may result in
-        numerical issues.
-      window_size: The window size for decomposed forecasting.
-        TODO(siriuz42):implement it.
-      per_core_batch_size: The batch size per core. Used at inference time during
-        batched inference when multiple GPU / TPU devices are used.
-      use_continuous_quantile_head: Whether to use a separate continuous quantile
-        head to avoid quantile collapsing.
-      force_flip_invariance: Whether to force flip invariance. TimesFM guarantees
-        that TimesFM(aX + b) = a * TimesFM(x) + b for a >= 0 by default. This flag
-        extends it to a < 0 as well.
-      infer_is_positive: Whether to guarantee nonnegativity of the output if the
-        input is nonnegative.
-      fix_quantile_crossing: Whether to fix quantile crossing.
-      return_backcast: Whether to return backcast.
-    """
+        if isinstance(path, str):
+            path = Path(path)
+        if path.is_dir():
+            path = path / "config.json"
+        elif path.suffix != ".json":
+            raise ValueError(f"Config file must be a .json file: {path}")
 
-    max_context: int = 0
-    max_horizon: int = 0
-    normalize_inputs: bool = False
-    window_size: int = 0
-    per_core_batch_size: int = 1
-    use_continuous_quantile_head: bool = False
-    force_flip_invariance: bool = True
-    infer_is_positive: bool = True
-    fix_quantile_crossing: bool = False
-    return_backcast: bool = False
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+
+        config = orjson.loads(path.read_bytes())
+        return cls.model_validate(config)
+
+    @classmethod
+    def from_dict(cls: type[TClass], config: dict) -> TClass:
+        return cls.model_validate(config)
+
+    def to_dict(self) -> dict:
+        return self.model_dump()
+
+    def save_pretrained(self, path: str | Path) -> None:
+        """Save config to a JSON file."""
+
+        if isinstance(path, str):
+            path = Path(path)
+
+        match path.suffix:
+            case "":
+                path = path / "config.json"
+            case ".json":
+                pass
+            case _:
+                raise ValueError(f"Config file must be a .json file: {path}")
+
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True)
+
+        path.write_bytes(orjson.dumps(self.model_dump(), option=orjson.OPT_INDENT_2))
+        return
 
 
-@dataclasses.dataclass(frozen=True)
-class ResidualBlockConfig:
+class ResidualBlockConfig(PydanticBaseModel):
     """Framework-agnostic config for a residual block."""
 
     input_dims: int
@@ -70,8 +66,7 @@ class ResidualBlockConfig:
     activation: Literal["relu", "swish", "none"]
 
 
-@dataclasses.dataclass(frozen=True)
-class RandomFourierFeaturesConfig:
+class RandomFourierFeaturesConfig(PydanticBaseModel):
     """Framework-agnostic config for random fourier features."""
 
     input_dims: int
@@ -80,8 +75,7 @@ class RandomFourierFeaturesConfig:
     use_bias: bool
 
 
-@dataclasses.dataclass(frozen=True)
-class TransformerConfig:
+class TransformerConfig(PydanticBaseModel):
     """Framework-agnostic config for a transformer."""
 
     model_dims: int
@@ -96,25 +90,67 @@ class TransformerConfig:
     fuse_qkv: bool
 
 
-@dataclasses.dataclass(frozen=True)
-class StackedTransformersConfig:
+class StackedTransformersConfig(PydanticBaseModel):
     """Framework-agnostic config for a stacked transformers."""
 
     num_layers: int
     transformer: TransformerConfig
 
 
-@dataclasses.dataclass(frozen=True)
-class TimesFM_2p5_200M_Config:
+class ModernBertConfig(PydanticBaseModel):
+    model_config = ConfigDict(extra="allow")
+    vocab_size: int = 50368
+    hidden_size: int = 768
+    intermediate_size: int = 1152
+    num_hidden_layers: int = 22
+    num_attention_heads: int = 12
+    hidden_activation: str = "gelu"
+    max_position_embeddings: int = 8192
+    initializer_range: float = 0.02
+    initializer_cutoff_factor: float = 2.0
+    norm_eps: float = 1e-5
+    norm_bias: bool = False
+    pad_token_id: int = 50283
+    eos_token_id: int = 50282
+    bos_token_id: int = 50281
+    cls_token_id: int = 50281
+    sep_token_id: int = 50282
+    global_rope_theta: float = 160000.0
+    attention_bias: bool = False
+    attention_dropout: float = 0.0
+    global_attn_every_n_layers: int = 3
+    local_attention: int = 128
+    local_rope_theta: float = 10000.0
+    embedding_dropout: float = 0.0
+    mlp_bias: bool = False
+    mlp_dropout: float = 0.0
+    decoder_bias: bool = True
+    classifier_pooling: Literal["cls", "mean"] = "cls"
+    classifier_dropout: float = 0.0
+    classifier_bias: bool = False
+    classifier_activation: str = "gelu"
+    deterministic_flash_attn: bool = False
+    sparse_prediction: bool = False
+    sparse_pred_ignore_index: int = -100
+    reference_compile: str | None = None
+    repad_logits_with_grad: bool = False
+
+    def to_hf(self) -> HFModernBertConfig:
+        cfg = self.model_dump()
+        return HFModernBertConfig.from_dict(cfg)
+
+
+class TimesFM_2p5_200M_Config(ConfigMixin):
     """Framework-agnostic config of TimesFM 2.5."""
 
-    context_limit = 16384
+    context_limit: int = 16384
     input_patch_len: int = 32
-    output_patch_len: int = 128
-    decode_index: int = 5
-    quantiles: list[float] = dataclasses.field(
-        default_factory=lambda: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-    )
+    output_patch_len: int = 20
+    # decode_index: int = 5
+    # quantiles: list[float] = dataclasses.field(
+    #     default_factory=lambda: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    # )
+    text_encoder: ModernBertConfig = ModernBertConfig()
     tokenizer: ResidualBlockConfig = ResidualBlockConfig(
         input_dims=64,
         hidden_dims=1280,
@@ -140,14 +176,7 @@ class TimesFM_2p5_200M_Config:
     output_projection_point: ResidualBlockConfig = ResidualBlockConfig(
         input_dims=1280,
         hidden_dims=1280,
-        output_dims=1280,
-        use_bias=False,
-        activation="swish",
-    )
-    output_projection_quantiles: ResidualBlockConfig = ResidualBlockConfig(
-        input_dims=1280,
-        hidden_dims=1280,
-        output_dims=10240,
+        output_dims=20,
         use_bias=False,
         activation="swish",
     )

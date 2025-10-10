@@ -1,20 +1,17 @@
 from pathlib import Path
 
-import orjson
 import torch
-from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from safetensors.torch import save_file
 from torch import nn
 from torch.nn.modules.module import _IncompatibleKeys
-from transformers.models.modernbert import ModernBertConfig
 from transformers.models.modernbert import ModernBertModel
 
 from .configs import TimesFM_2p5_200M_Config
 from .layers import ResidualBlock
 from .layers import Transformer
-from .utils import compute_causal_statistics
 from .utils import revin
+from .utils import update_running_stats
 from core.utils import setup_logger
 
 
@@ -38,28 +35,25 @@ def log_incompatible_keys(
 class NewsTimesFM_2p5_Model(nn.Module):
     """TimesFM 2.5 with 200M parameters."""
 
-    def __init__(self, text_encoder_config: ModernBertConfig) -> None:
+    def __init__(self, config: TimesFM_2p5_200M_Config) -> None:
         super().__init__()
-        config = TimesFM_2p5_200M_Config()
 
-        self.text_encoder_config = text_encoder_config
-        self.text_encoder = ModernBertModel(text_encoder_config)
+        self.text_encoder = ModernBertModel(config.text_encoder.to_hf())
         self.text_projection = nn.Linear(
-            text_encoder_config.hidden_size,
+            config.text_encoder.hidden_size,
             config.stacked_transformers.transformer.model_dims,
             bias=False,
         )
 
         # Names constants.
         self.input_patch_len = config.input_patch_len  # 32
-        self.output_patch_len = config.output_patch_len  # 128
-        self.m = self.output_patch_len // self.input_patch_len  # 4
+        self.output_patch_len = config.output_patch_len
+        self.m = self.output_patch_len // self.input_patch_len
         self.num_layers = config.stacked_transformers.num_layers  # 20
         self.num_heads = config.stacked_transformers.transformer.num_heads  # 16
         self.model_dims = config.stacked_transformers.transformer.model_dims  # 1280
-        self.num_heads = self.model_dims // self.num_heads  # 80
-        self.num_quantiles = len(config.quantiles) + 1  # 10
-        self.pred_quantile_index = config.decode_index  # 5
+        # self.num_quantiles = len(config.quantiles) + 1  # 10
+        # self.pred_quantile_index = config.decode_index  # 5
 
         # Layers.
         self.tokenizer = ResidualBlock(config.tokenizer)
@@ -80,13 +74,13 @@ class NewsTimesFM_2p5_Model(nn.Module):
         torch.nn.init.normal_(
             self.text_projection.weight,
             mean=0.0,
-            std=self.text_encoder_config.initializer_range,
+            std=self.config.text_encoder.initializer_range,
         )
         return
 
     @property
     def config_dict(self) -> dict:
-        config = {"text_encoder": self.text_encoder_config.to_dict()}
+        config = self.config.to_dict()
         return config
 
     def forward(
@@ -142,18 +136,41 @@ class NewsTimesFM_2p5_Model(nn.Module):
             mean_pooled
         )  # (B, patch_len, model_dims)
 
-        causal_means, causal_scale = compute_causal_statistics(inputs_ts, mask_ts)
-        normalized_inputs = revin(inputs_ts, causal_means, causal_scale, reverse=False)
+        B, patch_len, _ = inputs_ts.shape
+
+        n_context = torch.zeros(
+            B, patch_len, device=inputs_ts.device, dtype=torch.int64
+        )
+        mu_context = torch.zeros(
+            B, patch_len, device=inputs_ts.device, dtype=inputs_ts.dtype
+        )
+        sigma_context = torch.zeros(
+            B, patch_len, device=inputs_ts.device, dtype=inputs_ts.dtype
+        )
+        running_n = torch.zeros(B, device=inputs_ts.device, dtype=torch.int64)
+        running_mu = torch.zeros(B, device=inputs_ts.device, dtype=inputs_ts.dtype)
+        running_sigma = torch.zeros(B, device=inputs_ts.device, dtype=inputs_ts.dtype)
+        for i in range(patch_len):
+            running_n, running_mu, running_sigma = update_running_stats(
+                running_n,
+                running_mu,
+                running_sigma,
+                inputs_ts[:, i],
+                mask_ts[:, i],
+            )
+            n_context[:, i] = running_n
+            mu_context[:, i] = running_mu
+            sigma_context[:, i] = running_sigma
+
+        mu_context = mu_context.unsqueeze(-1)
+        sigma_context = sigma_context.unsqueeze(-1)
+
+        normalized_inputs = revin(inputs_ts, mu_context, sigma_context, reverse=False)
 
         normalized_output_ts = self(normalized_inputs, mask_ts, text_embeddings)
         normalized_output_ts = normalized_output_ts[..., self.pred_quantile_index]
 
-        last_causal_mean = causal_means[..., -1].unsqueeze(-1)
-        last_causal_scale = causal_scale[..., -1].unsqueeze(-1)
-
-        output_ts = revin(
-            normalized_output_ts, last_causal_mean, last_causal_scale, reverse=True
-        )
+        output_ts = revin(normalized_output_ts, mu_context, sigma_context, reverse=True)
 
         outputs = {
             "normalized_output": normalized_output_ts,
@@ -162,7 +179,7 @@ class NewsTimesFM_2p5_Model(nn.Module):
 
         if targets is not None:
             normalized_targets = revin(
-                targets, last_causal_mean, last_causal_scale, reverse=False
+                targets, mu_context, sigma_context, reverse=False
             )
             outputs["normalized_target"] = normalized_targets
             outputs["target"] = targets
@@ -170,65 +187,6 @@ class NewsTimesFM_2p5_Model(nn.Module):
 
     def compile_(self) -> "NewsTimesFM_2p5_Model":
         return torch.compile(self, mode="reduce-overhead", dynamic=True)  # type: ignore
-
-    @classmethod
-    def from_hf(
-        cls,
-        dtype: torch.dtype | None = None,
-        device: torch.device | None = None,
-        compile: bool = False,
-    ) -> "NewsTimesFM_2p5_Model":
-        if device is None:
-            device = torch.get_default_device()
-        if dtype is None:
-            dtype = torch.get_default_dtype()
-
-        ts_encoder = "google/timesfm-2.5-200m-pytorch"
-        text_encoder = "deepvk/RuModernBERT-base"
-
-        text_encoder_config_path = hf_hub_download(
-            repo_id=text_encoder, filename="config.json", revision="patched-tokenizer"
-        )
-        text_encoder_config = ModernBertConfig.from_json_file(text_encoder_config_path)
-
-        cls = cls(text_encoder_config=text_encoder_config).to(
-            dtype=dtype, device=device
-        )
-
-        ts_encoder_weights_path = hf_hub_download(
-            repo_id=ts_encoder, filename="model.safetensors"
-        )
-        state_dict = load_file(ts_encoder_weights_path, device=str(device))
-        incompatible_keys = cls.load_state_dict(state_dict, strict=False)
-        log_incompatible_keys(
-            incompatible_keys, model_specific_msg="for TimesFM_2p5_Model"
-        )
-
-        text_encoder_weights_path = hf_hub_download(
-            repo_id=text_encoder,
-            filename="model.safetensors",
-            revision="patched-tokenizer",
-        )
-        text_encoder_state_dict = load_file(
-            text_encoder_weights_path, device=str(device)
-        )
-        if any("model." in k for k in text_encoder_state_dict.keys()):
-            text_encoder_state_dict_temp = {}
-            for k, v in text_encoder_state_dict.items():
-                if k.startswith("model."):
-                    new_key = k[len("model.") :]
-                    text_encoder_state_dict_temp[new_key] = v
-                else:
-                    text_encoder_state_dict_temp[k] = v
-            text_encoder_state_dict = text_encoder_state_dict_temp
-        incompatible_keys = cls.text_encoder.load_state_dict(
-            text_encoder_state_dict, strict=False
-        )
-        log_incompatible_keys(incompatible_keys, model_specific_msg="for TextEncoder")
-
-        if compile:
-            cls = cls.compile_()
-        return cls  # type: ignore
 
     @classmethod
     def from_pretrained(
@@ -251,21 +209,8 @@ class NewsTimesFM_2p5_Model(nn.Module):
         if not path.is_dir():
             raise ValueError(f"{path} is not a directory")
 
-        possible_file_names = ["text_encoder_config.json", "config.json"]
-        for file_name in possible_file_names:
-            if (path / file_name).exists():
-                config_file = file_name
-                break
-        else:
-            raise FileNotFoundError(
-                f"Neither 'text_encoder_config.json' nor 'config.json' found in {path}"
-            )
-
-        text_encoder_config_dict = orjson.loads((path / config_file).read_bytes())
-        text_encoder_config = ModernBertConfig.from_dict(text_encoder_config_dict)
-        cls = cls(text_encoder_config=text_encoder_config).to(
-            dtype=dtype, device=device
-        )
+        config = TimesFM_2p5_200M_Config.from_json(path / "config.json")
+        cls = cls(config).to(dtype=dtype, device=device)
 
         state_dict = load_file(path / "model.safetensors", device=str(device))
         incompatible_keys = cls.load_state_dict(state_dict, strict=False)
@@ -277,21 +222,15 @@ class NewsTimesFM_2p5_Model(nn.Module):
     @classmethod
     def from_config(
         cls,
-        config: dict | ModernBertConfig,
+        config: dict | TimesFM_2p5_200M_Config,
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
         compile: bool = False,
     ) -> "NewsTimesFM_2p5_Model":
         if isinstance(config, dict):
-            if "text_encoder" in config:
-                config = config["text_encoder"]
-            text_encoder_config = ModernBertConfig.from_dict(config)  # type: ignore
-        else:
-            text_encoder_config = config
+            config = TimesFM_2p5_200M_Config.from_dict(config)  # type: ignore
 
-        cls = cls(text_encoder_config=text_encoder_config).to(
-            dtype=dtype, device=device
-        )
+        cls = cls(config).to(dtype=dtype, device=device)
         if compile:
             cls = cls.compile_()
         return cls  # type: ignore
@@ -353,5 +292,5 @@ class NewsTimesFM_2p5_Model(nn.Module):
         save_directory.mkdir(parents=True, exist_ok=True)
         state_dict = self.state_dict()
         save_file(state_dict, save_directory / "model.safetensors")
-        self.text_encoder_config.save_pretrained(save_directory)
+        self.config.save_pretrained(save_directory)
         return

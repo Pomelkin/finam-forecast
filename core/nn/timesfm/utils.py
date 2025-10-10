@@ -51,12 +51,14 @@ def revin(
     reverse: bool = False,
 ):
     """Reversible instance normalization."""
-    if len(mu.shape) == len(x.shape) - 1:
-        mu = mu[..., None]
-        sigma = sigma[..., None]
-    elif len(mu.shape) == len(x.shape) - 2:
-        mu = mu[..., None, None]
-        sigma = sigma[..., None, None]
+    if len(mu.shape) != len(x.shape):
+        raise ValueError(
+            f"mu must have the same number of dimensions as x, got {mu.shape} and {x.shape}"
+        )
+    if len(sigma.shape) != len(x.shape):
+        raise ValueError(
+            f"sigma must have the same number of dimensions as x, got {sigma.shape} and {x.shape}"
+        )
 
     if reverse:
         return x * sigma + mu
