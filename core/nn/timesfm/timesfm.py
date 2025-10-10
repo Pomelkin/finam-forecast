@@ -89,7 +89,6 @@ class NewsTimesFM_2p5_Model(nn.Module):
         masks_ts: torch.Tensor,
         inputs_text: torch.Tensor,
     ) -> torch.Tensor:
-        B = inputs_ts.shape[0]
         tokenizer_inputs = torch.cat([inputs_ts, masks_ts.to(inputs_ts.dtype)], dim=-1)
         input_embeddings = self.tokenizer(tokenizer_inputs)
 
@@ -101,7 +100,6 @@ class NewsTimesFM_2p5_Model(nn.Module):
                 input_embedding_text=inputs_text,
             )
         output_ts = self.output_projection_point(output_embeddings)
-        output_ts = output_ts.reshape(B, -1, self.output_patch_len, self.num_quantiles)
         return output_ts
 
     def forecast(
