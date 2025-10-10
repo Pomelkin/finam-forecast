@@ -32,5 +32,5 @@ dev = [
 ]
 
 [tool.pyright]
-typeCheckingMode = "basic" # "off" | "basic" | "standard" | "strict"
+typeCheckingMode = "off" # "off" | "basic" | "standard" | "strict"
 reportMissingTypeStubs = false

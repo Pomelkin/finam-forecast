@@ -52,8 +52,6 @@ class NewsTimesFM_2p5_Model(nn.Module):
         self.num_layers = config.stacked_transformers.num_layers  # 20
         self.num_heads = config.stacked_transformers.transformer.num_heads  # 16
         self.model_dims = config.stacked_transformers.transformer.model_dims  # 1280
-        # self.num_quantiles = len(config.quantiles) + 1  # 10
-        # self.pred_quantile_index = config.decode_index  # 5
 
         # Layers.
         self.tokenizer = ResidualBlock(config.tokenizer)
@@ -166,7 +164,6 @@ class NewsTimesFM_2p5_Model(nn.Module):
         normalized_inputs = revin(inputs_ts, mu_context, sigma_context, reverse=False)
 
         normalized_output_ts = self(normalized_inputs, mask_ts, text_embeddings)
-        normalized_output_ts = normalized_output_ts[..., self.pred_quantile_index]
 
         outputs_ts = revin(
             normalized_output_ts, mu_context, sigma_context, reverse=True
