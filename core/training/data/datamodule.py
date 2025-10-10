@@ -49,7 +49,13 @@ class TimesFMDataModule(L.LightningDataModule):
         return
 
     def _dataset_factory(self, path: str | Path) -> TimesFMDataset:
-        return TimesFMDataset(path=path, news_tokenizer=self.new_tokenizer)
+        return TimesFMDataset(
+            path=path,
+            news_tokenizer=self.new_tokenizer,
+            output_patch_len=self.data_cfg.output_patch_len,
+            input_patch_len=self.data_cfg.input_patch_len,
+            context_len=self.data_cfg.context_len,
+        )
 
     def setup(self, stage: str) -> None:
         if self.cache_path is None:

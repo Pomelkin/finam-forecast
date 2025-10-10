@@ -270,34 +270,35 @@ class NewsTimesFMTrainingModule(L.LightningModule):
     def forward(
         self,
         batch: dict[str, torch.Tensor],
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.model is None:
             raise ValueError("Model must be configured before forward pass.")
 
         predictions = self.model.forecast(
-            inputs_ts=batch["inputs_ts"],
+            inputs_ts=batch["inputs_log_returns"],
             mask_ts=batch["mask_ts"],
             inputs_text=batch["inputs_text"],
             mask_text=batch["mask_text"],
-            targets=batch["targets"],
+            targets=batch["targets_log_returns"],
         )
 
-        outputs = {}
         total_loss = self.loss(
-            predictions["normalized_output"],
-            predictions["normalized_target"],
+            predictions["normalized_outputs"],
+            predictions["normalized_targets"],
         )
-        outputs["loss"] = total_loss
-        return total_loss, predictions
+        with torch.no_grad():
+            predictions = (
+                batch["inputs_ts"][..., -1].log().unsqueeze(-1)
+                + predictions["outputs"].cumsum(-1)
+            ).exp()
+        return total_loss, predictions, batch["targets"]
 
     def training_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        loss, prediction = self(batch)
+        loss, prediction, target = self(batch)
 
-        metrics: dict[str, torch.Tensor] = self.training_metrics(
-            prediction["output"], prediction["target"]
-        )
+        metrics: dict[str, torch.Tensor] = self.training_metrics(prediction, target)
         metrics.update({"loss": loss.detach()})
 
         self.log_scheduled_values()
@@ -338,11 +339,9 @@ class NewsTimesFMTrainingModule(L.LightningModule):
     def validation_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        loss, prediction = self(batch)
+        loss, prediction, target = self(batch)
 
-        metrics: dict[str, torch.Tensor] = self.validation_metrics(
-            prediction["output"], prediction["target"]
-        )
+        metrics: dict[str, torch.Tensor] = self.validation_metrics(prediction, target)
         metrics.update({"loss": loss.detach()})
 
         self.log_dict(
@@ -365,8 +364,8 @@ class NewsTimesFMTrainingModule(L.LightningModule):
         )
 
         data_to_save = {
-            "predictions": prediction["output"][:, -2:].clone().detach().cpu(),
-            "targets": prediction["target"][:, -2:].clone().detach().cpu(),
+            "predictions": prediction[:, -2:].clone().detach().cpu(),
+            "targets": target[:, -2:].clone().detach().cpu(),
         }
         self.val_outputs.append(data_to_save)
         return loss
