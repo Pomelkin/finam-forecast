@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from pydantic import Field
 
 from .config_mixins import ConfigMixin
+from core.nn.timesfm.configs import TimesFM_2p5_200M_Config
 from core.utils import setup_logger
 
 logger = setup_logger()
@@ -66,6 +67,24 @@ class DataConfig(BaseModel):
     dataset_id: str
     batch_size: int
     num_workers: int = Field(ge=1)
+    output_patch_len: int = 20
+    input_patch_len: int = 32
+    context_len: int
+
+    def align_with_model_config(self, model_config: TimesFM_2p5_200M_Config) -> None:
+        if self.output_patch_len != model_config.output_patch_len:
+            logger.warning(
+                f"DataConfig output_patch_len {self.output_patch_len} is not equal to model_config output_patch_len {model_config.output_patch_len}. "
+                f"Setting to {model_config.output_patch_len}."
+            )
+            self.output_patch_len = model_config.output_patch_len
+        if self.input_patch_len != model_config.input_patch_len:
+            logger.warning(
+                f"DataConfig input_patch_len {self.input_patch_len} is not equal to model_config input_patch_len {model_config.input_patch_len}. "
+                f"Setting to {model_config.input_patch_len}."
+            )
+            self.input_patch_len = model_config.input_patch_len
+        return
 
 
 class TrainingParams(ConfigMixin):
@@ -74,3 +93,4 @@ class TrainingParams(ConfigMixin):
     trainer: TrainerParameters
     early_stopping: EarlyStoppingConfig | None = None
     checkpoint: CheckpointConfig
+    data: DataConfig

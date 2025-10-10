@@ -18,10 +18,10 @@ from lightning.pytorch.strategies import FSDPStrategy
 from torch.distributed.fsdp import MixedPrecision
 
 from core.nn import FSDP_SHARD_MODULES
+from core.nn.timesfm.configs import TimesFM_2p5_200M_Config
 from core.training.callbacks.checkpoint import setup_checkpoint_callback
 from core.training.callbacks.early_stopping import setup_early_stopping_callback
 from core.training.callbacks.tb_logger import setup_tb_logger
-from core.training.configs import DataConfig
 from core.training.configs import FSDPStrategyConfig
 from core.training.configs import Hyperparams
 from core.training.configs import SingleDeviceStrategyConfig
@@ -141,15 +141,6 @@ def _setup_strategy(
 
 @click.command()
 @click.option(
-    "--dataset-id", type=click.STRING, required=True, help="ClearML Dataset ID"
-)
-@click.option(
-    "--batch-size", type=click.INT, required=True, help="Batch size for training"
-)
-@click.option(
-    "--num-workers", type=click.INT, required=True, help="Number of DataLoader workers"
-)
-@click.option(
     "--remote-execution-queue",
     type=click.STRING,
     default="",
@@ -168,9 +159,6 @@ def _setup_strategy(
     default=False,
 )
 def train_timesfm(
-    dataset_id: str,
-    batch_size: int,
-    num_workers: int,
     remote_execution_queue: str,
     fast_dev_run: str,
     profile: bool,
@@ -202,9 +190,6 @@ def train_timesfm(
     training_params = TrainingParams.connect_as_file(
         task,
         path=ROOT_PATH / "configs" / "training_params.yaml",
-    )
-    data_cfg = DataConfig(
-        dataset_id=dataset_id, batch_size=batch_size, num_workers=num_workers
     )
 
     if remote_execution_queue != "":
@@ -238,19 +223,25 @@ def train_timesfm(
         profiler=profiler,
     )
 
+    clearml_input_model = InputModel(model_id=training_params.model_id)
+    clearml_input_model.connect(task, ignore_remote_overrides=True)
+    clearml_input_model_path = clearml_input_model.get_local_copy()
+    training_params.data.align_with_model_config(
+        TimesFM_2p5_200M_Config.from_json(
+            Path(clearml_input_model_path) / "config.json"
+        )
+    )
+    training_module = NewsTimesFMTrainingModule(
+        hyperparams=hyperparams,
+        path=clearml_input_model_path,
+        task=task,
+    )
+
     tokenizer_input_model = InputModel(model_id=training_params.tokenizer_id)
     tokenizer_input_model.connect(task, ignore_remote_overrides=True)
     data_module = TimesFMDataModule(
-        data_cfg=data_cfg,
+        data_cfg=training_params.data,
         tokenizer_path=tokenizer_input_model.get_local_copy(),
-    )
-
-    clearml_input_model = InputModel(model_id=training_params.model_id)
-    clearml_input_model.connect(task, ignore_remote_overrides=True)
-    training_module = NewsTimesFMTrainingModule(
-        hyperparams=hyperparams,
-        path=clearml_input_model.get_local_copy(),
-        task=task,
     )
 
     trainer.fit(training_module, datamodule=data_module)
