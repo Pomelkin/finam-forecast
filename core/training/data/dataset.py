@@ -33,7 +33,7 @@ class TimesFMDataset(Dataset):
         self.input_patch_len = input_patch_len
         self.context_len = context_len
         self.slice_len = self.context_len + self.output_patch_len + 1
-        self.num_slices_per_ticker = 60
+        self.num_slices_per_ticker = 30
         self.idx2ticker = self.prepare()
         return
 

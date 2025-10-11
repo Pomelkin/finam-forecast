@@ -24,6 +24,33 @@ class Lr(BaseModel):
     base_value: float
     final_value: float | None = Field(default=None, gt=0, validate_default=False)
 
+    text_encoder_freeze_iters_ratio: float | None = Field(
+        default=None, gt=0, lt=1, validate_default=False
+    )
+    text_encoder_warmup_iters_ratio: float | None = Field(
+        default=None, gt=0, lt=1, validate_default=False
+    )
+
+    @model_validator(mode="after")
+    def validate_text_encoder_iters(self) -> "Lr":
+        freeze_ratio = self.text_encoder_freeze_iters_ratio
+        warmup_ratio = self.text_encoder_warmup_iters_ratio
+        if (freeze_ratio is None) != (warmup_ratio is None):
+            raise ValueError(
+                "Both text_encoder_freeze_iters_ratio and text_encoder_warmup_iters_ratio must be provided or neither"
+            )
+        if (
+            (freeze_ratio is not None)
+            and (warmup_ratio is not None)
+            and not self.use_scheduler
+        ):
+            logger.warning(
+                "use_scheduler is False, text_encoder_freeze_iters_ratio and text_encoder_warmup_iters_ratio will be ignored."
+            )
+            self.text_encoder_freeze_iters_ratio = None
+            self.text_encoder_warmup_iters_ratio = None
+        return self
+
     @model_validator(mode="after")
     def validate_warmup(self) -> "Lr":
         if (self.warmup_value is None) != (

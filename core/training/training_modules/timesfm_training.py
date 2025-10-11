@@ -283,8 +283,8 @@ class NewsTimesFMTrainingModule(L.LightningModule):
         )
 
         total_loss = self.loss(
-            predictions["normalized_outputs"],
-            predictions["normalized_targets"],
+            predictions["outputs"],
+            predictions["targets"],
         )
         with torch.no_grad():
             predictions = (
